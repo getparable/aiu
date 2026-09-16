@@ -21,11 +21,11 @@ import (
 type fakeAPI struct {
 	t        *testing.T
 	mu       sync.Mutex
-	usage    map[string]string // access token -> usage body
-	status   map[string]int    // access token -> forced usage status
+	usage    map[string]string    // access token -> usage body
+	status   map[string]int       // access token -> forced usage status
 	emails   map[string]string    // access token -> Claude profile email
 	orgs     map[string][2]string // access token -> {organization uuid, name}
-	refresh  map[string]string // refresh token -> next access token ("" = invalid_grant)
+	refresh  map[string]string    // refresh token -> next access token ("" = invalid_grant)
 	usageHit atomic.Int32
 	server   *httptest.Server
 }
