@@ -48,6 +48,12 @@ Reading usage costs no quota, but the endpoints throttle hard. Every AIU process
 
 Tokens are only ever sent to Anthropic's and OpenAI's own hosts. There is no telemetry.
 
+## Developing the panel
+
+`AIU_JSON_FIXTURE=/path/to/aiu.json` makes the panel render a saved `aiu --json`
+instead of calling the CLI — useful for checking a layout (several organizations on
+one address, an expiring login) without touching real accounts.
+
 ## Layout
 
 ```

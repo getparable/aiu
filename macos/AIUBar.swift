@@ -47,7 +47,9 @@ struct Account: Decodable, Identifiable, Hashable {
     let fetchedAt: Date?
     let error: String?
 
-    var id: String { "\(provider):\(email)" }
+    // The organization is part of the identity: one address can hold several, and a
+    // list keyed only by address collapses them into one row.
+    var id: String { "\(provider):\(email)#\(org ?? "")" }
     var kind: Provider { Provider(rawValue: provider) ?? .claude }
     var session: UsageWindow? { windows.first { $0.group == "session" } }
     var busiestWeekly: UsageWindow? { windows.filter { $0.group == "weekly" }.max { $0.percent < $1.percent } }
@@ -221,11 +223,21 @@ final class Store {
         guard !loading else { return }
         loading = true
         defer { loading = false }
+        // Development aid: render a saved `aiu --json` instead of calling the CLI.
+        if let fixture = ProcessInfo.processInfo.environment["AIU_JSON_FIXTURE"],
+           let data = FileManager.default.contents(atPath: fixture) {
+            decode(data)
+            return
+        }
         let result = await CLI.run(["--json"])
         guard result.status == 0 else {
             lastError = result.message
             return
         }
+        decode(result.stdout)
+    }
+
+    private func decode(_ data: Data) {
         do {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .custom { decoder in
@@ -236,7 +248,7 @@ final class Store {
                 if let date = formatter.date(from: raw) { return date }
                 throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "bad date \(raw)"))
             }
-            accounts = try decoder.decode([Account].self, from: result.stdout)
+            accounts = try decoder.decode([Account].self, from: data)
             lastError = nil
             updatedAt = Date()
             barImage = renderBarImage()
@@ -475,9 +487,12 @@ struct WindowRow: View {
     }
 }
 
-struct AccountCard: View {
+/// One account inside a card: header, subtitle and its windows. `showsAddress` is off
+/// when the card's header already names the address, and the organization names the row.
+struct AccountBody: View {
     @Environment(Store.self) private var store
     let account: Account
+    var showsAddress = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -500,7 +515,7 @@ struct AccountCard: View {
                 Spacer(minLength: 4)
                 actions
             }
-            Text(account.subtitle)
+            Text(showsAddress ? account.subtitle : (account.orgName ?? account.email))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -532,8 +547,6 @@ struct AccountCard: View {
                 .lineLimit(2)
             }
         }
-        .padding(12)
-        .glassEffect(.regular, in: .rect(cornerRadius: 16))
     }
 
     private var actions: some View {
@@ -560,6 +573,48 @@ struct AccountCard: View {
     }
 }
 
+struct AccountCard: View {
+    let account: Account
+
+    var body: some View {
+        AccountBody(account: account)
+            .padding(12)
+            .glassEffect(.regular, in: .rect(cornerRadius: 16))
+    }
+}
+
+/// Several organizations on one address: one card, headed by the address, with each
+/// organization's own limits nested inside it.
+struct GroupedAccountCard: View {
+    let email: String
+    let accounts: [Account]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: accounts.contains(where: \.active) ? "circle.fill" : "circle")
+                    .font(.system(size: 7))
+                    .foregroundStyle(accounts.contains(where: \.active) ? .primary : .tertiary)
+                Text(email)
+                    .font(.system(.body, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 4)
+                Text("\(accounts.count) organizations")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            ForEach(Array(accounts.enumerated()), id: \.element.id) { index, account in
+                if index > 0 { Divider().opacity(0.35) }
+                AccountBody(account: account, showsAddress: false)
+                    .padding(.leading, 10)
+            }
+        }
+        .padding(12)
+        .glassEffect(.regular, in: .rect(cornerRadius: 16))
+    }
+}
+
 struct ProviderSection: View {
     @Environment(Store.self) private var store
     let provider: Provider
@@ -582,10 +637,27 @@ struct ProviderSection: View {
                 }
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 4)
-                ForEach(accounts) { AccountCard(account: $0) }
+                ForEach(groupedByAddress(accounts), id: \.0) { email, group in
+                    if group.count == 1 {
+                        AccountCard(account: group[0])
+                    } else {
+                        GroupedAccountCard(email: email, accounts: group)
+                    }
+                }
             }
         }
     }
+}
+
+/// Accounts by address, in the order they were added.
+func groupedByAddress(_ accounts: [Account]) -> [(String, [Account])] {
+    var order: [String] = []
+    var byEmail: [String: [Account]] = [:]
+    for account in accounts {
+        if byEmail[account.email] == nil { order.append(account.email) }
+        byEmail[account.email, default: []].append(account)
+    }
+    return order.map { ($0, byEmail[$0] ?? []) }
 }
 
 struct AddAccountView: View {
