@@ -63,13 +63,8 @@ func (c *Config) persistAccount(ctx context.Context, working *Record, label, sou
 		label = existing.Label
 	}
 	if label == "" {
-		label, _, _ = strings.Cut(email, "@")
-		// A second organization on the same address needs its own name to be usable.
-		if taken(idx, working.Provider, existing, label) && orgName != "" {
-			label = slug(orgName)
-		}
-	}
-	if taken(idx, working.Provider, existing, label) {
+		label = autoLabel(idx, working.Provider, existing, email, orgName)
+	} else if taken(idx, working.Provider, existing, label) {
 		c.Warn(fmt.Sprintf("label %q is already used for this provider — pass --label to tell the two apart", label))
 	}
 
@@ -181,6 +176,34 @@ func (c *Config) CaptureCodex(ctx context.Context, label string) (*SavedAccount,
 		}
 	}
 	return saved, nil
+}
+
+// personalOrg matches what Claude calls an individual's own organization.
+var personalOrg = regexp.MustCompile(`(?i)'s Organization$`)
+
+// autoLabel names an account without asking: the address' local part, and when that is
+// already taken by another organization, the organization itself. Whatever the browser
+// signed in as decides the name, so `aiu login` never needs --label.
+func autoLabel(idx *Index, p Provider, self *IndexEntry, email, orgName string) string {
+	base, _, _ := strings.Cut(email, "@")
+	if !taken(idx, p, self, base) {
+		return base
+	}
+	candidate := base + "-personal"
+	if orgName != "" && !personalOrg.MatchString(orgName) {
+		if s := slug(orgName); s != "" {
+			candidate = s
+		}
+	}
+	if !taken(idx, p, self, candidate) {
+		return candidate
+	}
+	for n := 2; ; n++ {
+		numbered := fmt.Sprintf("%s-%d", candidate, n)
+		if !taken(idx, p, self, numbered) {
+			return numbered
+		}
+	}
 }
 
 // taken reports whether another account of this provider already uses the label.

@@ -367,8 +367,9 @@ func TestTwoOrganizationsOnOneAddress(t *testing.T) {
 	if len(idx.Accounts) != 2 {
 		t.Fatalf("expected both organizations to be tracked, got %d", len(idx.Accounts))
 	}
-	if idx.Accounts[0].Label == idx.Accounts[1].Label {
-		t.Fatalf("labels must differ: %q", idx.Accounts[0].Label)
+	// Names come from what the browser signed in as; neither add passed a label.
+	if got := []string{idx.Accounts[0].Label, idx.Accounts[1].Label}; got[0] != "info" || got[1] != "business" {
+		t.Fatalf("auto labels = %v, want [info business]", got)
 	}
 
 	snap, err := c.Collect(ctx, CollectOptions{})
@@ -402,6 +403,35 @@ func TestTwoOrganizationsOnOneAddress(t *testing.T) {
 	}
 	if oauth := readClaudeCreds(t, c)["claudeAiOauth"].(map[string]any); oauth["accessToken"] != "at-personal" {
 		t.Fatalf("switch used the wrong organization: %v", oauth["accessToken"])
+	}
+}
+
+// A personal organization is named "<address>'s Organization"; slugifying that would
+// be unreadable, so it gets "-personal" instead.
+func TestAutoLabelForPersonalOrganization(t *testing.T) {
+	api := newFakeAPI(t)
+	c := testConfig(t, api)
+	ctx := context.Background()
+	exp := c.now().Add(24 * time.Hour).UnixMilli()
+	for token, org := range map[string][2]string{
+		"at-work": {"org-work", "Threefold"},
+		"at-own":  {"org-own", "info@example.com's Organization"},
+	} {
+		api.emails[token] = "info@example.com"
+		api.orgs[token] = org
+		api.usage[token] = claudeUsage
+	}
+	writeClaudeCreds(t, c, "at-work", "rt-work", exp)
+	if _, err := c.CaptureClaudeCode(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	writeClaudeCreds(t, c, "at-own", "rt-own", exp)
+	saved, err := c.CaptureClaudeCode(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Record.Label != "info-personal" {
+		t.Fatalf("label = %q, want info-personal", saved.Record.Label)
 	}
 }
 
