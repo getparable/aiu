@@ -143,6 +143,7 @@ func Run(argv []string) int {
 		"status": a.status, "watch": a.watch, "login": a.login, "add": a.add,
 		"list": a.list, "ls": a.list, "remove": a.remove, "rm": a.remove,
 		"sync": a.sync, "switch": a.switchTo, "use": a.switchTo, "whoami": a.whoami,
+		"link":    a.link,
 		"menubar": a.menuBar,
 		"help":    func(context.Context) error { a.help(); return nil },
 	}
@@ -519,6 +520,7 @@ func (a *app) help() {
   aiu login [--label NAME] [--readonly] [--manual]    browser sign-in for another account
   aiu switch <email|label>                            point Claude Code (or Codex) at a tracked account
   aiu list | remove <email|label> | sync | whoami
+  aiu link [install|remove|status]                    add or drop the ~/.local/bin/aiu shortcut
   aiu menubar                                         open the menu bar app (AIU.app)
 
 %s

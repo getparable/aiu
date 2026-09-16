@@ -14,6 +14,9 @@ Rate limits and reset times for several **Claude** (Pro/Max) and **ChatGPT/Codex
 make install        # builds AIU.app into ~/Applications and links ~/.local/bin/aiu
 ```
 
+A downloaded `AIU.app` carries the CLI inside it; **Settings → Terminal command → Install**
+adds the `~/.local/bin/aiu` shortcut (same as `aiu link install`).
+
 Requires macOS 26, Go 1.27+ and Xcode 27 (Swift 6.4) to build.
 
 ## Use

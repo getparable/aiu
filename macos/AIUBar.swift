@@ -742,6 +742,32 @@ struct AddAccountView: View {
     }
 }
 
+/// The `aiu` shortcut in ~/.local/bin. The work is done by the bundled binary
+/// (`aiu link`), so the terminal and this button share one implementation.
+enum CLILink {
+    struct State: Decodable, Equatable {
+        var state = "missing"
+        var path = ""
+        var target = ""
+        var binary = ""
+        var onPath = false
+        var error: String?
+        var detail = ""
+
+        var isInstalled: Bool { state == "installed" }
+        var canInstall: Bool { state != "occupied" }
+    }
+
+    static func run(_ action: String) async -> State {
+        let result = await CLI.run(["link", action, "--json"])
+        if var state = try? JSONDecoder().decode(State.self, from: result.stdout) {
+            if state.error == nil && result.status != 0 { state.error = result.message }
+            return state
+        }
+        return State(state: "missing", detail: result.message)
+    }
+}
+
 struct SettingsView: View {
     static let trademarkNotice = "Claude is a trademark of Anthropic, PBC. OpenAI and Codex are trademarks of OpenAI. AIU is not affiliated with or endorsed by either; their logos only label whose usage is shown."
     static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
@@ -749,6 +775,36 @@ struct SettingsView: View {
     @Environment(Store.self) private var store
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var launchError: String?
+    @State private var link = CLILink.State()
+
+    /// Install or remove the `aiu` command without leaving the panel.
+    @ViewBuilder
+    private var terminalCommand: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Terminal command")
+                Text(link.detail.isEmpty ? "Adds ~/.local/bin/aiu for the terminal" : link.detail)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .wrapsVertically()
+            }
+            Spacer(minLength: 8)
+            if link.isInstalled {
+                Button("Remove") { Task { link = await CLILink.run("remove") } }.buttonStyle(.glass)
+            } else if link.canInstall {
+                Button("Install") { Task { link = await CLILink.run("install") } }.buttonStyle(.glass)
+            }
+        }
+        if let error = link.error {
+            Text(error).font(.caption).foregroundStyle(.secondary).wrapsVertically()
+        }
+        if link.isInstalled && !link.onPath {
+            Text("~/.local/bin is not on your PATH — add it in your shell profile.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .wrapsVertically()
+        }
+    }
 
     var body: some View {
         @Bindable var store = store
@@ -769,6 +825,8 @@ struct SettingsView: View {
             if let launchError {
                 Text(launchError).font(.caption).foregroundStyle(.secondary)
             }
+            Divider().opacity(0.4)
+            terminalCommand
             Text("aiu reads each account at most once every 5 minutes, shared with the terminal.")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
@@ -789,6 +847,7 @@ struct SettingsView: View {
         }
         .padding(14)
         .cardSurface()
+        .task { link = await CLILink.run("status") }
     }
 }
 
