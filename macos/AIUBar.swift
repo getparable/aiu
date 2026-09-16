@@ -1046,12 +1046,19 @@ extension View {
     /// as murky over a busy desktop, and its backdrop layer ignores a scroll view's
     /// clip, so cards drew over the pinned header.
     func cardSurface(cornerRadius: CGFloat = 16, active: Bool = false) -> some View {
-        background(.thickMaterial, in: .rect(cornerRadius: cornerRadius))
-            .background(Color.accentColor.opacity(active ? 0.10 : 0), in: .rect(cornerRadius: cornerRadius))
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius)
-                    .strokeBorder(.primary.opacity(0.07), lineWidth: 1)
-            )
+        // The tint goes on top of the material, not behind it: a second `.background`
+        // would sit under the opaque material and never show.
+        background {
+            ZStack {
+                Rectangle().fill(.thickMaterial)
+                Color.accentColor.opacity(active ? 0.13 : 0)
+            }
+            .clipShape(.rect(cornerRadius: cornerRadius))
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: cornerRadius)
+                .strokeBorder(active ? Color.accentColor.opacity(0.30) : .primary.opacity(0.07), lineWidth: 1)
+        )
     }
 
     /// Let wrapped text size itself vertically inside the fixed-width panel.
