@@ -376,8 +376,8 @@ func (a *app) list(ctx context.Context) error {
 			if r.IsReadOnly() {
 				parts = append(parts, "read-only")
 			}
-			if r.OrgName != "" {
-				parts = append(parts, r.OrgName)
+			if name := core.DistinctOrgName(r); name != "" {
+				parts = append(parts, name)
 			}
 			if r.Source != "" {
 				parts = append(parts, "via "+r.Source)

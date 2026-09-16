@@ -56,10 +56,11 @@ struct Account: Decodable, Identifiable, Hashable {
     /// What limits the account right now.
     var tightest: Double { max(session?.percent ?? 0, busiestWeekly?.percent ?? 0) }
     var needsLogin: Bool { ["expired", "missing"].contains(login.state) }
-    /// The address, plus the organization when there is one to tell apart.
-    var subtitle: String {
-        guard let orgName, !orgName.isEmpty else { return email }
-        return "\(email)  ·  \(orgName)"
+    /// Claude names an individual's own organization "<address>'s Organization", which
+    /// says nothing the address does not; only a real organization name is worth room.
+    var distinctOrgName: String? {
+        guard let orgName, !orgName.isEmpty, !orgName.hasSuffix("'s Organization") else { return nil }
+        return orgName
     }
 }
 
@@ -515,7 +516,8 @@ struct AccountBody: View {
                 Spacer(minLength: 4)
                 actions
             }
-            Text(showsAddress ? account.subtitle : (account.orgName ?? account.email))
+            // Top level: the address. Nested under an address: the organization.
+            Text(showsAddress ? account.email : (account.distinctOrgName ?? "Personal"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -579,7 +581,7 @@ struct AccountCard: View {
     var body: some View {
         AccountBody(account: account)
             .padding(12)
-            .glassEffect(.regular, in: .rect(cornerRadius: 16))
+            .cardSurface()
     }
 }
 
@@ -611,7 +613,7 @@ struct GroupedAccountCard: View {
             }
         }
         .padding(12)
-        .glassEffect(.regular, in: .rect(cornerRadius: 16))
+        .cardSurface()
     }
 }
 
@@ -710,7 +712,7 @@ struct AddAccountView: View {
             }
         }
         .padding(14)
-        .glassEffect(.regular, in: .rect(cornerRadius: 16))
+        .cardSurface()
     }
 
     private func waiting(_ pending: Provider) -> some View {
@@ -786,18 +788,22 @@ struct SettingsView: View {
             }
         }
         .padding(14)
-        .glassEffect(.regular, in: .rect(cornerRadius: 16))
+        .cardSurface()
     }
 }
 
 enum Pane { case usage, add, settings }
 
 struct Panel: View {
+    /// The list grows with its content up to this, then scrolls.
+    private static let maxListHeight: CGFloat = 520
+
     @Environment(Store.self) private var store
     @State private var pane: Pane = .usage
+    @State private var listHeight: CGFloat = 0
 
     var body: some View {
-        GlassEffectContainer(spacing: 10) {
+        GlassEffectContainer(spacing: 8) {
             VStack(alignment: .leading, spacing: 12) {
                 header
                 if let error = store.lastError {
@@ -838,7 +844,9 @@ struct Panel: View {
                 iconButton("xmark", help: "Back") { pane = .usage }
             }
         }
-        .padding(.horizontal, 4)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .cardSurface(cornerRadius: 18)
     }
 
     @ViewBuilder
@@ -851,7 +859,7 @@ struct Panel: View {
             }
             .frame(maxWidth: .infinity)
             .padding(24)
-            .glassEffect(.regular, in: .rect(cornerRadius: 16))
+            .cardSurface()
         } else if store.accounts.isEmpty {
             ProgressView().frame(maxWidth: .infinity).padding(24)
         } else {
@@ -861,12 +869,16 @@ struct Panel: View {
                 }
                 // Keep the cards clear of the indicator instead of under it.
                 .padding(.trailing, 9)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { listHeight = $0 }
             }
             .scrollBounceBehavior(.basedOnSize)
             .scrollIndicators(.hidden)
             .slimScrollIndicator()
-            .frame(maxHeight: 560)
-            .wrapsVertically()
+            // The measured height, capped: a ScrollView has no natural height of its
+            // own, and fixedSize would let it grow past the panel and paint over the
+            // pinned header instead of scrolling under it.
+            .frame(height: min(max(listHeight, 80), Self.maxListHeight))
+            .clipShape(.rect(cornerRadius: 18))
         }
     }
 
@@ -899,6 +911,17 @@ struct Panel: View {
 }
 
 extension View {
+    /// The panel's card surface. Deliberately not `.glassEffect`: stacked glass reads
+    /// as murky over a busy desktop, and its backdrop layer ignores a scroll view's
+    /// clip, so cards drew over the pinned header.
+    func cardSurface(cornerRadius: CGFloat = 16) -> some View {
+        background(.thickMaterial, in: .rect(cornerRadius: cornerRadius))
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .strokeBorder(.primary.opacity(0.07), lineWidth: 1)
+            )
+    }
+
     /// Let wrapped text size itself vertically inside the fixed-width panel.
     func wrapsVertically() -> some View { fixedSize(horizontal: false, vertical: true) }
 

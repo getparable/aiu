@@ -291,6 +291,16 @@ func HealthOf(res *Result, now time.Time) LoginHealth {
 	return LoginHealth{"unknown", "login lifetime unknown"}
 }
 
+// DistinctOrgName is the organization's name when it carries information. Claude calls
+// an individual's own organization "<address>'s Organization", which only repeats the
+// address, so that one is left out.
+func DistinctOrgName(r *Record) string {
+	if strings.HasSuffix(r.OrgName, "'s Organization") {
+		return ""
+	}
+	return r.OrgName
+}
+
 var tierPattern = regexp.MustCompile(`(?i)(pro|max)_?(\d+x)?`)
 
 // TierLabel is the plan name, e.g. "Max 20x" or "ChatGPT Pro".

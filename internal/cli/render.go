@@ -88,8 +88,8 @@ func renderAccount(p painter, res *core.Result, labelWidth int, tagged bool, now
 		note = p.dim(health.Message)
 	}
 	var meta []string
-	if r.OrgName != "" {
-		meta = append(meta, r.OrgName)
+	if name := core.DistinctOrgName(r); name != "" {
+		meta = append(meta, name)
 	}
 	if t := core.TierLabel(r); t != "" {
 		meta = append(meta, t)
