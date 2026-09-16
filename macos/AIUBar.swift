@@ -498,9 +498,7 @@ struct AccountBody: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Image(systemName: account.active ? "circle.fill" : "circle")
-                    .font(.system(size: 7))
-                    .foregroundStyle(account.active ? .primary : .tertiary)
+                LiveDot(on: account.active)
                     .help(account.active ? "Active in \(account.kind.client)" : "Not active")
                 Text(account.label)
                     .font(.system(.body, weight: .semibold))
@@ -575,13 +573,28 @@ struct AccountBody: View {
     }
 }
 
+/// The account each CLI is signed in as. The card carries a tint for "this one", the
+/// dot says which row inside it — so a nested organization needs no rail of its own.
+struct LiveDot: View {
+    let on: Bool
+
+    var body: some View {
+        Circle()
+            .fill(on ? Color.accentColor : Color.primary.opacity(0.25))
+            .frame(width: 7, height: 7)
+            .overlay(Circle().stroke(Color.accentColor.opacity(on ? 0.3 : 0), lineWidth: 3))
+            .shadow(color: Color.accentColor.opacity(on ? 0.6 : 0), radius: 4)
+            .padding(.trailing, on ? 2 : 0)
+    }
+}
+
 struct AccountCard: View {
     let account: Account
 
     var body: some View {
         AccountBody(account: account)
             .padding(12)
-            .cardSurface()
+            .cardSurface(active: account.active)
     }
 }
 
@@ -594,26 +607,21 @@ struct GroupedAccountCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Image(systemName: accounts.contains(where: \.active) ? "circle.fill" : "circle")
-                    .font(.system(size: 7))
-                    .foregroundStyle(accounts.contains(where: \.active) ? .primary : .tertiary)
+                LiveDot(on: accounts.contains(where: \.active))
                 Text(email)
                     .font(.system(.body, weight: .semibold))
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 4)
-                Text("\(accounts.count) organizations")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
             }
             ForEach(Array(accounts.enumerated()), id: \.element.id) { index, account in
                 if index > 0 { Divider().opacity(0.35) }
                 AccountBody(account: account, showsAddress: false)
-                    .padding(.leading, 10)
+                    .padding(.leading, 12)
             }
         }
         .padding(12)
-        .cardSurface()
+        .cardSurface(active: accounts.contains(where: \.active))
     }
 }
 
@@ -631,11 +639,6 @@ struct ProviderSection: View {
                         .font(.caption.weight(.semibold))
                         .tracking(0.6)
                     Spacer()
-                    if accounts.count > 1, let best = store.mostHeadroom(provider) {
-                        Text("most headroom: \(best.label)")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
                 }
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 4)
@@ -648,6 +651,70 @@ struct ProviderSection: View {
                 }
             }
         }
+    }
+}
+
+/// The state of play: who each CLI is signed in as, how much of its tightest window is
+/// gone, and which account has the most room left.
+struct SummaryCard: View {
+    @Environment(Store.self) private var store
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Provider.allCases.filter { !store.group($0).isEmpty }) { provider in
+                row(provider)
+            }
+        }
+        .padding(12)
+        .cardSurface()
+    }
+
+    @ViewBuilder
+    private func row(_ provider: Provider) -> some View {
+        let accounts = store.group(provider)
+        let active = accounts.first(where: \.active)
+        let best = store.mostHeadroom(provider)
+        HStack(alignment: .top, spacing: 10) {
+            LogoView(provider: provider, size: 13)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 3) {
+                if let active {
+                    HStack(spacing: 6) {
+                        Text(active.label)
+                            .font(.system(.body, weight: .semibold))
+                            .lineLimit(1)
+                        Text(limitText(active))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("not signed in to \(provider.client)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let best, best.id != active?.id {
+                    Text("most headroom: \(best.label) · \(Int(best.tightest.rounded()))% used")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 4)
+            if let account = active ?? best {
+                Text("\(Int(account.tightest.rounded()))%")
+                    .font(.title3.weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(account.tightest >= 80 ? .primary : .secondary)
+            }
+        }
+    }
+
+    /// The window that actually limits the account right now, and when it frees up.
+    private func limitText(_ account: Account) -> String {
+        let windows = account.windows.filter { $0.percent >= account.tightest - 0.01 }
+        guard let limiting = windows.first ?? account.windows.first else { return "" }
+        guard let resets = limiting.resetsAt else { return limiting.shortLabel }
+        return "\(limiting.shortLabel) resets in \(compactInterval(until: resets))"
     }
 }
 
@@ -860,6 +927,7 @@ struct Panel: View {
     @Environment(Store.self) private var store
     @State private var pane: Pane = .usage
     @State private var listHeight: CGFloat = 0
+    @State private var listPosition = ScrollPosition(edge: .top)
 
     var body: some View {
         GlassEffectContainer(spacing: 8) {
@@ -883,7 +951,9 @@ struct Panel: View {
         }
         .frame(width: 360)
         .onAppear {
+            // The panel reopens where it was left; the summary belongs on screen.
             pane = .usage
+            listPosition.scrollTo(edge: .top)
             store.refreshIfStale()
         }
         .animation(.smooth(duration: 0.25), value: pane)
@@ -924,12 +994,14 @@ struct Panel: View {
         } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    SummaryCard()
                     ForEach(Provider.allCases) { ProviderSection(provider: $0) }
                 }
                 // Keep the cards clear of the indicator instead of under it.
                 .padding(.trailing, 9)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { listHeight = $0 }
             }
+            .scrollPosition($listPosition)
             .scrollBounceBehavior(.basedOnSize)
             .scrollIndicators(.hidden)
             .slimScrollIndicator()
@@ -973,8 +1045,9 @@ extension View {
     /// The panel's card surface. Deliberately not `.glassEffect`: stacked glass reads
     /// as murky over a busy desktop, and its backdrop layer ignores a scroll view's
     /// clip, so cards drew over the pinned header.
-    func cardSurface(cornerRadius: CGFloat = 16) -> some View {
+    func cardSurface(cornerRadius: CGFloat = 16, active: Bool = false) -> some View {
         background(.thickMaterial, in: .rect(cornerRadius: cornerRadius))
+            .background(Color.accentColor.opacity(active ? 0.10 : 0), in: .rect(cornerRadius: cornerRadius))
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius)
                     .strokeBorder(.primary.opacity(0.07), lineWidth: 1)
