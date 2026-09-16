@@ -136,8 +136,15 @@ var profileFields = []string{
 // ClaudeCachedEmail is the address .claude.json says Claude Code is signed in as.
 // It is a hint only: Claude Code does not rewrite it on every token change.
 func (c *Config) ClaudeCachedEmail() string {
+	email, _ := c.claudeCachedAccountIdentity()
+	return email
+}
+
+// claudeCachedAccountIdentity also returns the organization, which is what tells two
+// logins on one address apart.
+func (c *Config) claudeCachedAccountIdentity() (string, string) {
 	acct := c.claudeCachedAccount()
-	return str(acct["emailAddress"])
+	return str(acct["emailAddress"]), str(acct["organizationUuid"])
 }
 
 func (c *Config) claudeCachedAccount() map[string]any {
@@ -243,10 +250,13 @@ func codexIdentity(idToken, accountID string) CodexIdentity {
 	}
 }
 
-// LiveEmail is the address Codex is signed in as.
-func (l *LiveCodex) LiveEmail() string {
-	return codexIdentity(str(l.Tokens["id_token"]), str(l.Tokens["account_id"])).Email
+// identity is who Codex is signed in as, read from its id_token.
+func (l *LiveCodex) identity() CodexIdentity {
+	return codexIdentity(str(l.Tokens["id_token"]), str(l.Tokens["account_id"]))
 }
+
+// LiveEmail is the address Codex is signed in as.
+func (l *LiveCodex) LiveEmail() string { return l.identity().Email }
 
 func codexRecordFromLive(l *LiveCodex) *Record {
 	id := codexIdentity(str(l.Tokens["id_token"]), str(l.Tokens["account_id"]))

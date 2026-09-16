@@ -354,7 +354,7 @@ func (a *app) list(ctx context.Context) error {
 	now := time.Now()
 	for _, r := range records {
 		active := ""
-		if m := live[r.Provider]; m != nil && m.Email == r.Email {
+		if m := live[r.Provider]; m != nil && m.Is(r) {
 			active = a.p.green(" active")
 		}
 		var state string
@@ -375,6 +375,9 @@ func (a *app) list(ctx context.Context) error {
 			}
 			if r.IsReadOnly() {
 				parts = append(parts, "read-only")
+			}
+			if r.OrgName != "" {
+				parts = append(parts, r.OrgName)
 			}
 			if r.Source != "" {
 				parts = append(parts, "via "+r.Source)
@@ -407,9 +410,9 @@ func (a *app) sync(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	tracked := func(rs []*core.Record, p core.Provider, email string) bool {
+	tracked := func(rs []*core.Record, p core.Provider, m core.LiveMatch) bool {
 		for _, r := range rs {
-			if r.Provider == p && r.Email == email && !r.Missing {
+			if r.Provider == p && !r.Missing && m.Is(r) {
 				return true
 			}
 		}
@@ -422,23 +425,23 @@ func (a *app) sync(ctx context.Context) error {
 			fmt.Fprintln(a.stdout, a.p.dim("no Claude Code login found"))
 		case !m.Verified:
 			fmt.Fprintln(a.stdout, a.p.yellow("! a Claude Code login exists but could not be identified — run `claude` once so its token refreshes, then retry"))
-		case tracked(synced, core.Claude, m.Email):
+		case tracked(synced, core.Claude, m):
 			fmt.Fprintf(a.stdout, "%s %s %s is up to date\n", a.p.green("✔"), a.p.tag(core.Claude), m.Email)
 		default:
 			fmt.Fprintf(a.stdout, "%s %s is signed in to Claude Code but not tracked — run `aiu add`\n", a.p.yellow("!"), m.Email)
 		}
 	}
 	if a.opts.provider != core.Claude {
-		live, email, synced := a.cfg.SyncCodex(records, true)
+		live, m, synced := a.cfg.SyncCodex(records, true)
 		switch {
 		case live == nil:
 			fmt.Fprintln(a.stdout, a.p.dim("no Codex login found"))
-		case email == "":
+		case m.Email == "":
 			fmt.Fprintln(a.stdout, a.p.yellow("! a Codex login exists but its id_token carries no email — run `codex login` again"))
-		case tracked(synced, core.Codex, email):
-			fmt.Fprintf(a.stdout, "%s %s %s is up to date\n", a.p.green("✔"), a.p.tag(core.Codex), email)
+		case tracked(synced, core.Codex, m):
+			fmt.Fprintf(a.stdout, "%s %s %s is up to date\n", a.p.green("✔"), a.p.tag(core.Codex), m.Email)
 		default:
-			fmt.Fprintf(a.stdout, "%s %s is signed in to Codex but not tracked — run `aiu add --codex`\n", a.p.yellow("!"), email)
+			fmt.Fprintf(a.stdout, "%s %s is signed in to Codex but not tracked — run `aiu add --codex`\n", a.p.yellow("!"), m.Email)
 		}
 	}
 	return nil

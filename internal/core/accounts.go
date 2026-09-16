@@ -17,14 +17,14 @@ type SavedAccount struct {
 
 // persistAccount identifies a token set, then stores it and indexes the account.
 func (c *Config) persistAccount(ctx context.Context, working *Record, label, source string, mergeClaudeJSON bool) (*SavedAccount, error) {
-	var email string
+	var email, org, orgName string
 	profile := map[string]any{}
 	if working.Provider == Codex {
 		id := codexIdentity(working.IDToken, working.AccountID)
 		if id.Email == "" {
 			return nil, errors.New("the Codex login did not include an email address in its id_token")
 		}
-		email = id.Email
+		email, org = id.Email, id.AccountID
 		profile["emailAddress"] = email
 	} else {
 		var err error
@@ -32,13 +32,19 @@ func (c *Config) persistAccount(ctx context.Context, working *Record, label, sou
 		if err != nil {
 			return nil, err
 		}
+		org, orgName = str(profile["organizationUuid"]), str(profile["organizationName"])
 		if mergeClaudeJSON {
-			if cached := c.claudeCachedAccount(); str(cached["emailAddress"]) == email {
+			// Claude Code's cached block is only the same account when the address and
+			// the organization both match: one address can hold several organizations.
+			cached := c.claudeCachedAccount()
+			if str(cached["emailAddress"]) == email && (org == "" || str(cached["organizationUuid"]) == org) {
 				for _, k := range profileFields {
 					if v := cached[k]; v != nil {
 						profile[k] = v
 					}
 				}
+				org = firstNonEmpty(org, str(cached["organizationUuid"]))
+				orgName = firstNonEmpty(orgName, str(cached["organizationName"]))
 			}
 		}
 	}
@@ -49,7 +55,7 @@ func (c *Config) persistAccount(ctx context.Context, working *Record, label, sou
 	}
 	var existing *IndexEntry
 	for _, e := range idx.Accounts {
-		if e.Email == email && e.Provider == working.Provider {
+		if e.Email == email && e.Provider == working.Provider && e.Org == org {
 			existing = e
 		}
 	}
@@ -58,18 +64,21 @@ func (c *Config) persistAccount(ctx context.Context, working *Record, label, sou
 	}
 	if label == "" {
 		label, _, _ = strings.Cut(email, "@")
-	}
-	for _, e := range idx.Accounts {
-		if e != existing && e.Provider == working.Provider && e.Label == label {
-			c.Warn(fmt.Sprintf("label %q is also used by %s — use the email address to refer to either account", label, e.Email))
+		// A second organization on the same address needs its own name to be usable.
+		if taken(idx, working.Provider, existing, label) && orgName != "" {
+			label = slug(orgName)
 		}
 	}
+	if taken(idx, working.Provider, existing, label) {
+		c.Warn(fmt.Sprintf("label %q is already used for this provider — pass --label to tell the two apart", label))
+	}
 
-	key := storeKey(working.Provider, email)
+	key := storeKey(working.Provider, email, org)
 	previous, _ := c.tokenGet(key)
 	now := c.now().UnixMilli()
 	rec := *working
 	rec.Email, rec.Label, rec.Profile, rec.UpdatedAt = email, label, profile, now
+	rec.OrgUUID, rec.OrgName = org, orgName
 	rec.Source = firstNonEmpty(source, rec.Source)
 	rec.CapturedAt = now
 	if previous != nil {
@@ -83,9 +92,12 @@ func (c *Config) persistAccount(ctx context.Context, working *Record, label, sou
 		return nil, err
 	}
 	if existing != nil {
-		existing.Label = label
+		existing.Label, existing.Org, existing.OrgName = label, org, firstNonEmpty(orgName, existing.OrgName)
 	} else {
-		idx.Accounts = append(idx.Accounts, &IndexEntry{Email: email, Label: label, Provider: working.Provider, AddedAt: time.Now().UTC().Format(time.RFC3339)})
+		idx.Accounts = append(idx.Accounts, &IndexEntry{
+			Email: email, Label: label, Org: org, OrgName: orgName,
+			Provider: working.Provider, AddedAt: time.Now().UTC().Format(time.RFC3339),
+		})
 	}
 	if err := c.saveIndex(idx); err != nil {
 		return nil, err
@@ -171,6 +183,23 @@ func (c *Config) CaptureCodex(ctx context.Context, label string) (*SavedAccount,
 	return saved, nil
 }
 
+// taken reports whether another account of this provider already uses the label.
+func taken(idx *Index, p Provider, self *IndexEntry, label string) bool {
+	for _, e := range idx.Accounts {
+		if e != self && e.Provider == p && e.Label == label {
+			return true
+		}
+	}
+	return false
+}
+
+var nonWord = regexp.MustCompile(`[^a-z0-9]+`)
+
+// slug turns an organization name into a label: "Threefold Inc." → "threefold-inc".
+func slug(name string) string {
+	return strings.Trim(nonWord.ReplaceAllString(strings.ToLower(name), "-"), "-")
+}
+
 var prefixed = regexp.MustCompile(`(?i)^(claude|codex):(.+)$`)
 
 // FindAccount resolves an email or label. A claude:/codex: prefix (or provider)
@@ -194,9 +223,9 @@ func (c *Config) FindAccount(target string, provider Provider) (*Index, *IndexEn
 		if len(found) > 1 {
 			names := make([]string, len(found))
 			for i, e := range found {
-				names[i] = string(e.Provider) + ":" + e.Email
+				names[i] = e.Label + " → " + e.Describe()
 			}
-			return nil, fmt.Errorf("%q matches %d accounts (%s) — use claude:/codex: or the email address", name, len(found), strings.Join(names, ", "))
+			return nil, fmt.Errorf("%q matches %d accounts (%s) — use the label, or claude:/codex:", name, len(found), strings.Join(names, ", "))
 		}
 		if len(found) == 1 {
 			return found[0], nil
@@ -222,7 +251,7 @@ func (c *Config) RemoveAccount(target string, provider Provider) (*IndexEntry, e
 	if err != nil {
 		return nil, err
 	}
-	if err := c.tokenDelete(storeKey(e.Provider, e.Email)); err != nil {
+	if err := c.tokenDelete(storeKey(e.Provider, e.Email, e.Org)); err != nil {
 		return nil, err
 	}
 	kept := idx.Accounts[:0]
@@ -235,7 +264,7 @@ func (c *Config) RemoveAccount(target string, provider Provider) (*IndexEntry, e
 	if err := c.saveIndex(idx); err != nil {
 		return nil, err
 	}
-	c.cacheDelete(storeKey(e.Provider, e.Email))
+	c.cacheDelete(storeKey(e.Provider, e.Email, e.Org))
 	return e, nil
 }
 
@@ -259,7 +288,8 @@ func (c *Config) DescribeLive(ctx context.Context, verify bool) (map[Provider]*L
 		out[Claude] = &m
 	}
 	if live := c.ReadCodexAuth(); live != nil {
-		out[Codex] = &LiveMatch{Email: live.LiveEmail(), Verified: true}
+		id := live.identity()
+		out[Codex] = &LiveMatch{Email: id.Email, Org: id.AccountID, Verified: id.Email != ""}
 	}
 	return out, nil
 }
@@ -283,28 +313,37 @@ func (c *Config) SwitchAccount(ctx context.Context, target string, provider Prov
 	if err != nil {
 		return nil, err
 	}
-	find := func(rs []*Record, p Provider, email string) *Record {
+	// The entry names one account; a record matches it by address and organization.
+	find := func(rs []*Record, e *IndexEntry) *Record {
 		for _, r := range rs {
-			if r.Provider == p && r.Email == email && !r.Missing {
+			if r.Provider == e.Provider && r.Email == e.Email && r.OrgUUID == e.Org && !r.Missing {
 				return r
 			}
 		}
 		return nil
 	}
+	tracked := func(rs []*Record, m LiveMatch, p Provider) bool {
+		for _, r := range rs {
+			if r.Provider == p && !r.Missing && m.Is(r) {
+				return true
+			}
+		}
+		return false
+	}
 	res := &SwitchResult{Entry: e}
 
 	if e.Provider == Codex {
-		live, liveEmail, synced := c.SyncCodex(records, true)
-		rec := find(synced, Codex, e.Email)
+		live, m, synced := c.SyncCodex(records, true)
+		rec := find(synced, e)
 		if rec == nil {
-			return nil, fmt.Errorf("token for %s not found — sign in again for it", e.Email)
+			return nil, fmt.Errorf("token for %s not found — sign in again for it", e.Describe())
 		}
-		if live != nil && liveEmail == e.Email && live.refreshToken() == rec.RefreshToken {
+		if live != nil && m.Is(rec) && live.refreshToken() == rec.RefreshToken {
 			res.AlreadyActive = true
 			return res, nil
 		}
-		if live != nil && find(synced, Codex, liveEmail) == nil {
-			res.UntrackedReplaced = firstNonEmpty(liveEmail, "an unidentified account")
+		if live != nil && !tracked(synced, m, Codex) {
+			res.UntrackedReplaced = firstNonEmpty(m.Email, "an unidentified account")
 		}
 		if rec, err = c.ensureFresh(ctx, rec, nil, nil, false); err != nil {
 			return nil, err
@@ -317,19 +356,19 @@ func (c *Config) SwitchAccount(ctx context.Context, target string, provider Prov
 	}
 
 	live, m, synced := c.SyncClaude(ctx, records, true)
-	if m.Verified && m.Email == e.Email {
+	rec := find(synced, e)
+	if rec != nil && m.Verified && m.Is(rec) {
 		res.AlreadyActive = true
 		return res, nil
 	}
-	if live != nil && !(m.Verified && find(synced, Claude, m.Email) != nil) {
+	if live != nil && !(m.Verified && tracked(synced, m, Claude)) {
 		res.UntrackedReplaced = firstNonEmpty(m.Email, "an unidentified account")
 	}
-	rec := find(synced, Claude, e.Email)
 	if rec == nil {
-		return nil, fmt.Errorf("token for %s not found — sign in again for it", e.Email)
+		return nil, fmt.Errorf("token for %s not found — sign in again for it", e.Describe())
 	}
 	if rec.IsReadOnly() {
-		return nil, fmt.Errorf("%s was added read-only and cannot run Claude Code — re-add it with a full login to switch to it", e.Email)
+		return nil, fmt.Errorf("%s was added read-only and cannot run Claude Code — re-add it with a full login to switch to it", e.Describe())
 	}
 	if rec, err = c.ensureFresh(ctx, rec, nil, nil, false); err != nil {
 		return nil, err

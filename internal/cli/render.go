@@ -88,6 +88,9 @@ func renderAccount(p painter, res *core.Result, labelWidth int, tagged bool, now
 		note = p.dim(health.Message)
 	}
 	var meta []string
+	if r.OrgName != "" {
+		meta = append(meta, r.OrgName)
+	}
 	if t := core.TierLabel(r); t != "" {
 		meta = append(meta, t)
 	}
@@ -230,6 +233,8 @@ type jsonAccount struct {
 	Provider         core.Provider    `json:"provider"`
 	Email            string           `json:"email"`
 	Label            string           `json:"label"`
+	Org              string           `json:"org,omitempty"`
+	OrgName          string           `json:"orgName,omitempty"`
 	Active           bool             `json:"active"`
 	Tier             string           `json:"tier,omitempty"`
 	SubscriptionType string           `json:"subscriptionType,omitempty"`
@@ -266,7 +271,7 @@ func toJSON(snap *core.Snapshot, now time.Time) []jsonAccount {
 			usage = res.Usage
 		}
 		out = append(out, jsonAccount{
-			Provider: r.Provider, Email: r.Email, Label: r.Label, Active: res.Active,
+			Provider: r.Provider, Email: r.Email, Label: r.Label, Org: r.OrgUUID, OrgName: r.OrgName, Active: res.Active,
 			Tier: core.TierLabel(r), SubscriptionType: r.SubscriptionType, RateLimitTier: r.RateLimitTier, PlanType: r.PlanType,
 			TokenExpiresAt: iso(r.ExpiresAt), LoginExpiresAt: iso(r.RefreshTokenExpiresAt),
 			Login: core.HealthOf(res, now), ReadOnly: r.IsReadOnly(), CanSwitch: !r.IsReadOnly() && !r.Missing,

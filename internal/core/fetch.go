@@ -111,10 +111,22 @@ func (c *Config) adoptCodexLive(r *Record, live *LiveCodex) (*Record, error) {
 }
 
 // LiveMatch is who a CLI is signed in as. Verified means a token matched or the
-// profile endpoint confirmed it; otherwise Email is .claude.json's hint.
+// profile endpoint confirmed it; otherwise Email is .claude.json's hint. Org is the
+// organization (Claude) or ChatGPT account the login is scoped to: one address can
+// hold several, each with its own limits.
 type LiveMatch struct {
 	Email    string
+	Org      string
 	Verified bool
+}
+
+// Is reports whether a record is the account this match names.
+func (m LiveMatch) Is(r *Record) bool {
+	if m.Email == "" || m.Email != r.Email {
+		return false
+	}
+	// An unknown org matches any record for the address; we know no better.
+	return m.Org == "" || r.OrgUUID == "" || m.Org == r.OrgUUID
 }
 
 func matchClaudeLive(c *Config, live *LiveClaude, records []*Record) LiveMatch {
@@ -125,10 +137,11 @@ func matchClaudeLive(c *Config, live *LiveClaude, records []*Record) LiveMatch {
 		// Only a token present on both sides is evidence.
 		if (live.refreshToken() != "" && r.RefreshToken == live.refreshToken()) ||
 			(live.accessToken() != "" && r.AccessToken == live.accessToken()) {
-			return LiveMatch{Email: r.Email, Verified: true}
+			return LiveMatch{Email: r.Email, Org: r.OrgUUID, Verified: true}
 		}
 	}
-	return LiveMatch{Email: c.ClaudeCachedEmail()}
+	email, org := c.claudeCachedAccountIdentity()
+	return LiveMatch{Email: email, Org: org}
 }
 
 func fingerprint(token string) string {
@@ -148,21 +161,24 @@ func (c *Config) resolveClaudeLive(ctx context.Context, live *LiveClaude, record
 	recent := c.readCache()[profileKey]
 	if recent != nil && recent.Fingerprint == fp {
 		if recent.Email != "" {
-			return LiveMatch{Email: recent.Email, Verified: true}
+			return LiveMatch{Email: recent.Email, Org: recent.Org, Verified: true}
 		}
 		if c.now().UnixMilli()-recent.FailedAt < profileRetrySpacing.Milliseconds() {
 			return m
 		}
 	}
-	email, _, err := c.fetchClaudeProfile(ctx, live.accessToken())
+	email, profile, err := c.fetchClaudeProfile(ctx, live.accessToken())
 	now := c.now().UnixMilli()
 	if err != nil {
 		c.cacheUpdate(profileKey, func(*cacheEntry) *cacheEntry { return &cacheEntry{Fingerprint: fp, FailedAt: now} })
 		c.Warn("could not verify the active Claude Code account: " + err.Error())
 		return m
 	}
-	c.cacheUpdate(profileKey, func(*cacheEntry) *cacheEntry { return &cacheEntry{Fingerprint: fp, Email: email, VerifiedAt: now} })
-	return LiveMatch{Email: email, Verified: true}
+	org := str(profile["organizationUuid"])
+	c.cacheUpdate(profileKey, func(*cacheEntry) *cacheEntry {
+		return &cacheEntry{Fingerprint: fp, Email: email, Org: org, VerifiedAt: now}
+	})
+	return LiveMatch{Email: email, Org: org, Verified: true}
 }
 
 // SyncClaude adopts Claude Code's newer token into the matching record.
@@ -183,7 +199,7 @@ func (c *Config) SyncClaude(ctx context.Context, records []*Record, verify bool)
 	out := make([]*Record, len(records))
 	for i, r := range records {
 		out[i] = r
-		if r.Provider != Claude || r.Missing || r.Email != m.Email {
+		if r.Provider != Claude || r.Missing || !m.Is(r) {
 			continue
 		}
 		next, err := c.adoptClaudeLive(r, live)
@@ -200,16 +216,17 @@ func (c *Config) SyncClaude(ctx context.Context, records []*Record, verify bool)
 }
 
 // SyncCodex is the Codex side; identity comes from auth.json, so it is purely local.
-func (c *Config) SyncCodex(records []*Record, adopt bool) (*LiveCodex, string, []*Record) {
+func (c *Config) SyncCodex(records []*Record, adopt bool) (*LiveCodex, LiveMatch, []*Record) {
 	live := c.ReadCodexAuth()
 	if live == nil {
-		return nil, "", records
+		return nil, LiveMatch{}, records
 	}
-	email := live.LiveEmail()
+	id := live.identity()
+	m := LiveMatch{Email: id.Email, Org: id.AccountID, Verified: id.Email != ""}
 	out := make([]*Record, len(records))
 	for i, r := range records {
 		out[i] = r
-		if !adopt || r.Provider != Codex || r.Missing || email == "" || r.Email != email {
+		if !adopt || r.Provider != Codex || r.Missing || !m.Is(r) {
 			continue
 		}
 		next, err := c.adoptCodexLive(r, live)
@@ -222,7 +239,7 @@ func (c *Config) SyncCodex(records []*Record, adopt bool) (*LiveCodex, string, [
 		}
 		out[i] = next
 	}
-	return live, email, out
+	return live, m, out
 }
 
 // ---------------------------------------------------------------- usage
@@ -394,7 +411,7 @@ type Result struct {
 // Snapshot is every tracked account plus who each CLI is signed in as.
 type Snapshot struct {
 	Results []*Result
-	Live    map[Provider]string
+	Live    map[Provider]LiveMatch
 	Empty   bool
 }
 
@@ -411,7 +428,7 @@ func (c *Config) Collect(ctx context.Context, opts CollectOptions) (*Snapshot, e
 	if err != nil {
 		return nil, err
 	}
-	snap := &Snapshot{Live: map[Provider]string{}}
+	snap := &Snapshot{Live: map[Provider]LiveMatch{}}
 	if len(idx.Accounts) == 0 {
 		snap.Empty = true
 		return snap, nil
@@ -433,8 +450,8 @@ func (c *Config) Collect(ctx context.Context, opts CollectOptions) (*Snapshot, e
 		records = kept
 	}
 	liveClaude, claudeMatch, records := c.SyncClaude(ctx, records, !opts.NoSync)
-	liveCodex, codexEmail, records := c.SyncCodex(records, !opts.NoSync)
-	snap.Live[Claude], snap.Live[Codex] = claudeMatch.Email, codexEmail
+	liveCodex, codexMatch, records := c.SyncCodex(records, !opts.NoSync)
+	snap.Live[Claude], snap.Live[Codex] = claudeMatch, codexMatch
 
 	// The live docs are shared by every goroutine that may hand a refresh back.
 	var mu sync.Mutex
@@ -444,7 +461,7 @@ func (c *Config) Collect(ctx context.Context, opts CollectOptions) (*Snapshot, e
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			res := &Result{Record: r, Active: snap.Live[r.Provider] != "" && snap.Live[r.Provider] == r.Email}
+			res := &Result{Record: r, Active: snap.Live[r.Provider].Is(r)}
 			results[i] = res
 			if r.Missing {
 				res.Err, res.NeedsLogin = "token not found in store — sign in again for this account", true

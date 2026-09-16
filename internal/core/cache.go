@@ -22,6 +22,7 @@ type cacheEntry struct {
 
 	Fingerprint string `json:"fingerprint,omitempty"`
 	Email       string `json:"email,omitempty"`
+	Org         string `json:"org,omitempty"`
 	VerifiedAt  int64  `json:"verifiedAt,omitempty"`
 	FailedAt    int64  `json:"failedAt,omitempty"`
 }

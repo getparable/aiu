@@ -33,6 +33,10 @@ struct Account: Decodable, Identifiable, Hashable {
     let provider: String
     let email: String
     let label: String
+    /// One address can hold several organizations (Claude) or ChatGPT accounts, each
+    /// with its own limits, so the organization is part of what names an account.
+    let org: String?
+    let orgName: String?
     let active: Bool
     let tier: String?
     let login: LoginHealth
@@ -50,6 +54,11 @@ struct Account: Decodable, Identifiable, Hashable {
     /// What limits the account right now.
     var tightest: Double { max(session?.percent ?? 0, busiestWeekly?.percent ?? 0) }
     var needsLogin: Bool { ["expired", "missing"].contains(login.state) }
+    /// The address, plus the organization when there is one to tell apart.
+    var subtitle: String {
+        guard let orgName, !orgName.isEmpty else { return email }
+        return "\(email)  ·  \(orgName)"
+    }
 }
 
 enum Provider: String, CaseIterable, Identifiable {
@@ -491,7 +500,7 @@ struct AccountCard: View {
                 Spacer(minLength: 4)
                 actions
             }
-            Text(account.email)
+            Text(account.subtitle)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)

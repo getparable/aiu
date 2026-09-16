@@ -23,14 +23,15 @@ type fakeAPI struct {
 	mu       sync.Mutex
 	usage    map[string]string // access token -> usage body
 	status   map[string]int    // access token -> forced usage status
-	emails   map[string]string // access token -> Claude profile email
+	emails   map[string]string    // access token -> Claude profile email
+	orgs     map[string][2]string // access token -> {organization uuid, name}
 	refresh  map[string]string // refresh token -> next access token ("" = invalid_grant)
 	usageHit atomic.Int32
 	server   *httptest.Server
 }
 
 func newFakeAPI(t *testing.T) *fakeAPI {
-	f := &fakeAPI{t: t, usage: map[string]string{}, status: map[string]int{}, emails: map[string]string{}, refresh: map[string]string{}}
+	f := &fakeAPI{t: t, usage: map[string]string{}, status: map[string]int{}, emails: map[string]string{}, orgs: map[string][2]string{}, refresh: map[string]string{}}
 	f.server = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.server.Close)
 	return f
@@ -59,7 +60,11 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(401)
 			return
 		}
-		fmt.Fprintf(w, `{"account":{"email":%q,"uuid":"u-1"},"organization":{"name":"Org"}}`, email)
+		org := f.orgs[token]
+		if org[0] == "" {
+			org = [2]string{"org-default", "Org"}
+		}
+		fmt.Fprintf(w, `{"account":{"email":%q,"uuid":"u-1"},"organization":{"uuid":%q,"name":%q}}`, email, org[0], org[1])
 	case "/claude/token", "/codex/token":
 		var body map[string]string
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -331,6 +336,72 @@ func TestSwitchClaudeKeepsBothAccounts(t *testing.T) {
 	}
 	if oauth := readClaudeCreds(t, c)["claudeAiOauth"].(map[string]any); oauth["accessToken"] != "at-b" {
 		t.Fatal("switch back did not restore b")
+	}
+}
+
+// One address can hold two Claude organizations with separate limits; they must not
+// overwrite each other, and only the live one is active.
+func TestTwoOrganizationsOnOneAddress(t *testing.T) {
+	api := newFakeAPI(t)
+	c := testConfig(t, api)
+	ctx := context.Background()
+	exp := c.now().Add(24 * time.Hour).UnixMilli()
+
+	api.emails["at-personal"] = "info@example.com"
+	api.orgs["at-personal"] = [2]string{"org-personal", "Personal"}
+	api.emails["at-business"] = "info@example.com"
+	api.orgs["at-business"] = [2]string{"org-business", "Business"}
+	api.usage["at-personal"] = claudeUsage
+	api.usage["at-business"] = strings.Replace(claudeUsage, "99.0", "12.0", 1)
+
+	writeClaudeCreds(t, c, "at-personal", "rt-personal", exp)
+	if _, err := c.CaptureClaudeCode(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	writeClaudeCreds(t, c, "at-business", "rt-business", exp)
+	if _, err := c.CaptureClaudeCode(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	idx, _ := c.LoadIndex()
+	if len(idx.Accounts) != 2 {
+		t.Fatalf("expected both organizations to be tracked, got %d", len(idx.Accounts))
+	}
+	if idx.Accounts[0].Label == idx.Accounts[1].Label {
+		t.Fatalf("labels must differ: %q", idx.Accounts[0].Label)
+	}
+
+	snap, err := c.Collect(ctx, CollectOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var active, idle *Result
+	for _, r := range snap.Results {
+		if r.Active {
+			active = r
+		} else {
+			idle = r
+		}
+	}
+	if active == nil || idle == nil {
+		t.Fatalf("exactly one account should be active: %+v", snap.Results)
+	}
+	if active.Record.OrgName != "Business" {
+		t.Errorf("the live login is the Business organization, got %q", active.Record.OrgName)
+	}
+	if HeadroomOf(NormalizeWindows(active.Usage, time.Now())).Weekly != 12 {
+		t.Error("each organization must get its own usage reading")
+	}
+	if HeadroomOf(NormalizeWindows(idle.Usage, time.Now())).Weekly != 99 {
+		t.Error("the other organization kept the wrong reading")
+	}
+
+	// Switching to the personal organization writes its token into Claude Code.
+	if _, err := c.SwitchAccount(ctx, idle.Record.Label, ""); err != nil {
+		t.Fatal(err)
+	}
+	if oauth := readClaudeCreds(t, c)["claudeAiOauth"].(map[string]any); oauth["accessToken"] != "at-personal" {
+		t.Fatalf("switch used the wrong organization: %v", oauth["accessToken"])
 	}
 }
 

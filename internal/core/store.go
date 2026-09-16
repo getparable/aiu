@@ -34,6 +34,8 @@ type Record struct {
 	PlanType              string         `json:"planType,omitempty"`
 	AccountID             string         `json:"accountId,omitempty"`
 	UserID                string         `json:"userId,omitempty"`
+	OrgUUID               string         `json:"orgUuid,omitempty"`
+	OrgName               string         `json:"orgName,omitempty"`
 	Profile               map[string]any `json:"profile,omitempty"`
 	Source                string         `json:"source,omitempty"`
 	CapturedAt            int64          `json:"capturedAt,omitempty"`
@@ -43,11 +45,18 @@ type Record struct {
 	Missing bool `json:"-"`
 }
 
-// StoreKey is the name a record is stored and cached under. Codex keys are
-// namespaced because one address can hold both subscriptions.
-func (r *Record) StoreKey() string { return storeKey(r.Provider, r.Email) }
+// StoreKey is the name a record is stored and cached under. One address can hold
+// both subscriptions, and — on Claude — several organizations with separate limits,
+// so the provider and the organization are both part of the key.
+func (r *Record) StoreKey() string { return storeKey(r.Provider, r.Email, r.OrgUUID) }
 
-func storeKey(p Provider, email string) string { return string(p) + ":" + email }
+func storeKey(p Provider, email, org string) string {
+	key := string(p) + ":" + email
+	if org != "" {
+		key += "#" + org
+	}
+	return key
+}
 
 // IsExpired reports whether the access token is within margin of expiry.
 func (r *Record) IsExpired(now time.Time, margin time.Duration) bool {
@@ -70,10 +79,22 @@ func (r *Record) IsReadOnly() bool {
 
 // IndexEntry is one tracked account; tokens live in the store, not here.
 type IndexEntry struct {
-	Email    string   `json:"email"`
-	Label    string   `json:"label"`
+	Email string `json:"email"`
+	Label string `json:"label"`
+	// Org is the Claude organization uuid, or the ChatGPT account id: the same
+	// address can hold two of either, each with its own limits.
+	Org      string   `json:"org,omitempty"`
+	OrgName  string   `json:"orgName,omitempty"`
 	Provider Provider `json:"provider"`
 	AddedAt  string   `json:"addedAt,omitempty"`
+}
+
+// Describe names an account for an error message.
+func (e *IndexEntry) Describe() string {
+	if e.OrgName != "" {
+		return string(e.Provider) + ":" + e.Email + " (" + e.OrgName + ")"
+	}
+	return string(e.Provider) + ":" + e.Email
 }
 
 // Index is the account list, in the order accounts were added.
@@ -92,7 +113,45 @@ func (c *Config) LoadIndex() (*Index, error) {
 	if !ok || idx.Accounts == nil {
 		idx.Accounts = []*IndexEntry{}
 	}
+	c.fillMissingOrgs(idx)
 	return idx, nil
+}
+
+// fillMissingOrgs upgrades accounts stored before keys carried an organization. Until
+// an entry knows its organization, a second organization on the same address would
+// look like the same account and overwrite it. Best effort: a failure here leaves the
+// account exactly as it was.
+func (c *Config) fillMissingOrgs(idx *Index) {
+	changed := false
+	for _, e := range idx.Accounts {
+		if e.Org != "" {
+			continue
+		}
+		oldKey := storeKey(e.Provider, e.Email, "")
+		r, err := c.tokenGet(oldKey)
+		if err != nil || r == nil {
+			continue
+		}
+		org, orgName := r.AccountID, ""
+		if e.Provider == Claude {
+			org, orgName = str(r.Profile["organizationUuid"]), str(r.Profile["organizationName"])
+		}
+		if org == "" {
+			continue
+		}
+		r.OrgUUID, r.OrgName = org, orgName
+		if err := c.tokenSet(storeKey(e.Provider, e.Email, org), r); err != nil {
+			c.Warn("could not re-key " + e.Email + ": " + err.Error())
+			continue
+		}
+		_ = c.tokenDelete(oldKey)
+		e.Org, e.OrgName, changed = org, orgName, true
+	}
+	if changed {
+		if err := c.saveIndex(idx); err != nil {
+			c.Warn("could not save the account index: " + err.Error())
+		}
+	}
 }
 
 func (c *Config) saveIndex(idx *Index) error { return writePrivateJSON(c.indexFile(), idx) }
@@ -149,7 +208,7 @@ func (c *Config) tokenDelete(key string) error {
 func (c *Config) LoadRecords(idx *Index) ([]*Record, error) {
 	out := make([]*Record, 0, len(idx.Accounts))
 	for _, e := range idx.Accounts {
-		r, err := c.tokenGet(storeKey(e.Provider, e.Email))
+		r, err := c.tokenGet(storeKey(e.Provider, e.Email, e.Org))
 		if err != nil {
 			return nil, err
 		}
@@ -157,6 +216,7 @@ func (c *Config) LoadRecords(idx *Index) ([]*Record, error) {
 			r = &Record{Missing: true}
 		}
 		r.Provider, r.Email, r.Label = e.Provider, e.Email, e.Label
+		r.OrgUUID, r.OrgName = e.Org, e.OrgName
 		out = append(out, r)
 	}
 	return out, nil
