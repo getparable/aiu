@@ -397,6 +397,23 @@ func TestTwoOrganizationsOnOneAddress(t *testing.T) {
 		t.Error("the other organization kept the wrong reading")
 	}
 
+	// A profile entry cached before organizations existed must not make both
+	// organizations on the address look active.
+	c.cacheUpdate(profileKey, func(e *cacheEntry) *cacheEntry { e.Org = ""; return e })
+	snap, err = c.Collect(ctx, CollectOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeCount := 0
+	for _, r := range snap.Results {
+		if r.Active {
+			activeCount++
+		}
+	}
+	if activeCount != 1 {
+		t.Fatalf("exactly one account may be active, got %d", activeCount)
+	}
+
 	// Switching to the personal organization writes its token into Claude Code.
 	if _, err := c.SwitchAccount(ctx, idle.Record.Label, ""); err != nil {
 		t.Fatal(err)

@@ -159,7 +159,9 @@ func (c *Config) resolveClaudeLive(ctx context.Context, live *LiveClaude, record
 	}
 	fp := fingerprint(live.accessToken())
 	recent := c.readCache()[profileKey]
-	if recent != nil && recent.Fingerprint == fp {
+	// An entry without an organization cannot tell two organizations on one address
+	// apart, so it is re-fetched rather than trusted.
+	if recent != nil && recent.Fingerprint == fp && (recent.Email == "" || recent.Org != "") {
 		if recent.Email != "" {
 			return LiveMatch{Email: recent.Email, Org: recent.Org, Verified: true}
 		}

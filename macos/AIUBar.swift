@@ -859,8 +859,12 @@ struct Panel: View {
                 VStack(alignment: .leading, spacing: 14) {
                     ForEach(Provider.allCases) { ProviderSection(provider: $0) }
                 }
+                // Keep the cards clear of the indicator instead of under it.
+                .padding(.trailing, 9)
             }
             .scrollBounceBehavior(.basedOnSize)
+            .scrollIndicators(.hidden)
+            .slimScrollIndicator()
             .frame(maxHeight: 560)
             .wrapsVertically()
         }
@@ -897,6 +901,52 @@ struct Panel: View {
 extension View {
     /// Let wrapped text size itself vertically inside the fixed-width panel.
     func wrapsVertically() -> some View { fixedSize(horizontal: false, vertical: true) }
+
+    /// A thin indicator drawn over the scroll view's trailing edge. The system one is
+    /// wider and sits under the glass cards; this one stays in front of them.
+    func slimScrollIndicator() -> some View { modifier(SlimScrollIndicator()) }
+}
+
+private struct ScrollMetrics: Equatable {
+    var offset: CGFloat = 0
+    var visible: CGFloat = 0
+    var content: CGFloat = 0
+
+    var scrollable: CGFloat { max(0, content - visible) }
+    var thumbHeight: CGFloat { max(28, visible * (visible / max(content, 1))) }
+    var thumbOffset: CGFloat {
+        guard scrollable > 0 else { return 0 }
+        let travel = visible - thumbHeight
+        return min(max(offset / scrollable, 0), 1) * travel
+    }
+}
+
+private struct SlimScrollIndicator: ViewModifier {
+    @State private var metrics = ScrollMetrics()
+
+    func body(content: Content) -> some View {
+        content
+            .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
+                ScrollMetrics(
+                    offset: geometry.contentOffset.y,
+                    visible: geometry.containerSize.height,
+                    content: geometry.contentSize.height
+                )
+            } action: { _, new in
+                metrics = new
+            }
+            .overlay(alignment: .topTrailing) {
+                if metrics.scrollable > 1 {
+                    Capsule()
+                        .fill(.primary.opacity(0.28))
+                        .frame(width: 3, height: metrics.thumbHeight)
+                        .offset(y: metrics.thumbOffset)
+                        .padding(.trailing, 1)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                }
+            }
+    }
 }
 
 // MARK: - App
