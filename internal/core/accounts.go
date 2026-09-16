@@ -227,14 +227,25 @@ var prefixed = regexp.MustCompile(`(?i)^(claude|codex):(.+)$`)
 
 // FindAccount resolves an email or label. A claude:/codex: prefix (or provider)
 // narrows the search; a name tracked for both providers is an error, not a guess.
+// The full key a listing prints — provider:email#organization — also resolves, which
+// is what front ends pass when one address holds several organizations.
 func (c *Config) FindAccount(target string, provider Provider) (*Index, *IndexEntry, error) {
 	name := target
 	if m := prefixed.FindStringSubmatch(target); m != nil {
 		provider, name = Provider(strings.ToLower(m[1])), m[2]
 	}
+	name, org, hasOrg := strings.Cut(name, "#")
 	idx, err := c.LoadIndex()
 	if err != nil {
 		return nil, nil, err
+	}
+	if hasOrg {
+		for _, e := range idx.Accounts {
+			if e.Email == name && e.Org == org && (provider == "" || e.Provider == provider) {
+				return idx, e, nil
+			}
+		}
+		return nil, nil, fmt.Errorf("no tracked account matches %q", target)
 	}
 	pick := func(match func(*IndexEntry) bool) (*IndexEntry, error) {
 		var found []*IndexEntry

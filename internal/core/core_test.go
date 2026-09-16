@@ -414,6 +414,18 @@ func TestTwoOrganizationsOnOneAddress(t *testing.T) {
 		t.Fatalf("exactly one account may be active, got %d", activeCount)
 	}
 
+	// The panel passes the full key, which must resolve to exactly one organization.
+	for _, r := range snap.Results {
+		key := string(r.Record.Provider) + ":" + r.Record.Email + "#" + r.Record.OrgUUID
+		_, entry, err := c.FindAccount(key, "")
+		if err != nil || entry.Org != r.Record.OrgUUID {
+			t.Fatalf("FindAccount(%q) = %+v, %v", key, entry, err)
+		}
+	}
+	if _, _, err := c.FindAccount("claude:info@example.com#nope", ""); err == nil {
+		t.Fatal("an unknown organization must not resolve")
+	}
+
 	// Switching to the personal organization writes its token into Claude Code.
 	if _, err := c.SwitchAccount(ctx, idle.Record.Label, ""); err != nil {
 		t.Fatal(err)
