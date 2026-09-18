@@ -6,7 +6,11 @@ BIN        = bin/aiu
 APP        = build/AIU.app
 APP_DEST  ?= $(HOME)/Applications
 CLI_DEST  ?= $(HOME)/.local/bin
-SWIFT      = swiftc -O -parse-as-library -swift-version 5
+# -disable-sandbox: swiftc runs macro plugins (@Observable) inside a sandbox of its
+# own, and that nested sandbox cannot be applied when the build is already sandboxed —
+# Homebrew's builder fails with "sandbox_apply: Operation not permitted" and every
+# macro then silently fails to expand. The plugins here are Apple's own.
+SWIFT      = swiftc -O -parse-as-library -swift-version 5 -disable-sandbox
 
 # Release signing. SIGN_ID defaults to the first "Developer ID Application" identity in
 # the keychain; NOTARY_PROFILE names credentials saved with `xcrun notarytool store-credentials`.
