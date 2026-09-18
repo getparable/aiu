@@ -46,6 +46,12 @@ struct Account: Decodable, Identifiable, Hashable {
     let stale: String?
     let fetchedAt: Date?
     let error: String?
+    /// The one account per provider aiu says to work in next, and the line explaining why.
+    /// `allSpent` turns that into a countdown: nothing has weekly room left, and this is
+    /// merely the account that comes back first.
+    let recommended: Bool?
+    let why: String?
+    let allSpent: Bool?
 
     // The organization is part of the identity: one address can hold several, and a
     // list keyed only by address collapses them into one row.
@@ -229,8 +235,10 @@ final class Store {
         return usable.first { $0.active } ?? usable.min { $0.tightest < $1.tightest }
     }
 
-    func mostHeadroom(_ provider: Provider) -> Account? {
-        group(provider).filter { $0.error == nil }.min { $0.tightest < $1.tightest }
+    /// The account to work in next. aiu ranks them — 5h window free, flagship model still
+    /// there, most weekly capacity for the plan — so the app and the CLI never disagree.
+    func recommended(_ provider: Provider) -> Account? {
+        group(provider).first { $0.recommended == true }
     }
 
     /// Cheap to call often: aiu answers from its cache until an account's 5-minute spacing has passed.
@@ -690,42 +698,76 @@ struct SummaryCard: View {
     private func row(_ provider: Provider) -> some View {
         let accounts = store.group(provider)
         let active = accounts.first(where: \.active)
-        let best = store.mostHeadroom(provider)
-        HStack(alignment: .top, spacing: 10) {
-            LogoView(provider: provider, size: 13)
-                .padding(.top, 2)
-            VStack(alignment: .leading, spacing: 3) {
-                if let active {
-                    HStack(spacing: 6) {
-                        Text(active.label)
-                            .font(.system(.body, weight: .semibold))
-                            .lineLimit(1)
-                        TimelineView(.everyMinute) { context in
-                            Text(limitText(active, now: context.date))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+        let best = store.recommended(provider)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 10) {
+                LogoView(provider: provider, size: 13)
+                    .padding(.top, 2)
+                VStack(alignment: .leading, spacing: 3) {
+                    if let active {
+                        HStack(spacing: 6) {
+                            Text(active.label)
+                                .font(.system(.body, weight: .semibold))
+                                .lineLimit(1)
+                            TimelineView(.everyMinute) { context in
+                                Text(limitText(active, now: context.date))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
+                    } else {
+                        Text("not signed in to \(provider.client)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                } else {
-                    Text("not signed in to \(provider.client)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
-                if let best, best.id != active?.id {
-                    Text("most headroom: \(best.label) · \(Int(best.tightest.rounded()))% used")
+                Spacer(minLength: 4)
+                if let account = active ?? best {
+                    Text("\(Int(account.tightest.rounded()))%")
+                        .font(.title3.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(account.tightest >= 80 ? .primary : .secondary)
+                }
+            }
+            if let best, best.id != active?.id {
+                recommendation(best)
+            }
+        }
+    }
+
+    /// The account aiu says to work in next, with the switch one click away — the whole
+    /// point of naming it. An account that is only "back first" has nothing to switch to.
+    @ViewBuilder
+    private func recommendation(_ best: Account) -> some View {
+        let spent = best.allSpent == true
+        HStack(spacing: 6) {
+            Image(systemName: spent ? "clock" : "arrow.right.circle")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(spent ? "all spent · \(best.label) back first" : "use next: \(best.label)")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                if let why = best.why, !why.isEmpty {
+                    Text(why)
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                 }
             }
             Spacer(minLength: 4)
-            if let account = active ?? best {
-                Text("\(Int(account.tightest.rounded()))%")
-                    .font(.title3.weight(.semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(account.tightest >= 80 ? .primary : .secondary)
+            if !spent && best.canSwitch {
+                Button("Switch") {
+                    Task { await store.switchTo(best) }
+                }
+                .buttonStyle(.glass)
+                .controlSize(.small)
+                .font(.caption.weight(.semibold))
+                .help("Point \(best.kind.client) at \(best.label) (\(best.email))")
             }
         }
+        .padding(.leading, 23)
     }
 
     /// The window that actually limits the account right now, and when it frees up.

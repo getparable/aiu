@@ -135,7 +135,7 @@ func renderAccount(p painter, res *core.Result, labelWidth int, tagged bool, now
 	return lines
 }
 
-// summarize names the account with the most headroom and the next 5h reset.
+// summarize names the account to work in next and the next 5h reset.
 func summarize(p painter, group []*core.Result, named bool, now time.Time) []string {
 	var ok []*core.Result
 	for _, r := range group {
@@ -150,17 +150,15 @@ func summarize(p painter, group []*core.Result, named bool, now time.Time) []str
 	if named {
 		who = ok[0].Record.Provider.Name() + " "
 	}
-	hr := func(r *core.Result) core.Headroom { return core.HeadroomOf(core.NormalizeWindows(r.Usage, now)) }
-	best := ok[0]
-	for _, r := range ok[1:] {
-		a, b := hr(r), hr(best)
-		if a.Tightest() < b.Tightest() || (a.Tightest() == b.Tightest() && a.Session < b.Session) {
-			best = r
+	var lines []string
+	if pick := core.Recommend(ok, now); pick != nil {
+		lead := "use next"
+		if pick.AllSpent {
+			lead = "all spent — back first"
 		}
+		lines = append(lines, fmt.Sprintf("%s %s%s: %s %s", p.cyan("\u2192"), who, lead,
+			p.bold(pick.Result.Record.Label), p.dim("("+pick.Reason+")")))
 	}
-	h := hr(best)
-	lines := []string{fmt.Sprintf("%s %smost headroom now: %s %s", p.cyan("→"), who, p.bold(best.Record.Label),
-		p.dim(fmt.Sprintf("(5h %.0f%% · 7d %.0f%%)", h.Session, h.Weekly)))}
 
 	var next *core.Result
 	var nextAt time.Time
@@ -176,7 +174,7 @@ func summarize(p painter, group []*core.Result, named bool, now time.Time) []str
 		}
 	}
 	if next != nil {
-		lines = append(lines, fmt.Sprintf("%s %snext 5h reset: %s %s", p.cyan("→"), who, p.bold(next.Record.Label), p.dim("in "+core.FormatRelative(nextAt.Sub(now)))))
+		lines = append(lines, fmt.Sprintf("%s %snext 5h reset: %s %s", p.cyan("\u2192"), who, p.bold(next.Record.Label), p.dim("in "+core.FormatRelative(nextAt.Sub(now)))))
 	}
 	return lines
 }
@@ -250,6 +248,12 @@ type jsonAccount struct {
 	Stale            string           `json:"stale,omitempty"`
 	FetchedAt        string           `json:"fetchedAt,omitempty"`
 	Error            string           `json:"error,omitempty"`
+	// Recommended marks the one account per provider worth switching to next, and Why
+	// says what earned it. AllSpent turns the recommendation into a countdown: nothing
+	// has weekly room left, and this is merely the account that comes back first.
+	Recommended bool   `json:"recommended,omitempty"`
+	Why         string `json:"why,omitempty"`
+	AllSpent    bool   `json:"allSpent,omitempty"`
 }
 
 func toJSON(snap *core.Snapshot, now time.Time) []jsonAccount {
@@ -258,6 +262,18 @@ func toJSON(snap *core.Snapshot, now time.Time) []jsonAccount {
 			return ""
 		}
 		return time.UnixMilli(ms).UTC().Format(time.RFC3339)
+	}
+	picks := map[core.Provider]*core.Pick{}
+	for _, p := range core.Providers {
+		var group []*core.Result
+		for _, res := range snap.Results {
+			if res.Record.Provider == p {
+				group = append(group, res)
+			}
+		}
+		if pick := core.Recommend(group, now); pick != nil {
+			picks[p] = pick
+		}
 	}
 	out := make([]jsonAccount, 0, len(snap.Results))
 	for _, res := range snap.Results {
@@ -277,6 +293,10 @@ func toJSON(snap *core.Snapshot, now time.Time) []jsonAccount {
 			Login: core.HealthOf(res, now), ReadOnly: r.IsReadOnly(), CanSwitch: !r.IsReadOnly() && !r.Missing,
 			Windows: windows, Usage: usage, Stale: res.Stale, FetchedAt: iso(res.FetchedAt), Error: res.Err,
 		})
+		if pick := picks[r.Provider]; pick != nil && pick.Result == res {
+			last := &out[len(out)-1]
+			last.Recommended, last.Why, last.AllSpent = true, pick.Reason, pick.AllSpent
+		}
 	}
 	return out
 }
