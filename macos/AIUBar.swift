@@ -117,6 +117,25 @@ struct LogoView: View {
 
 // MARK: - CLI bridge
 
+/// One decoder for everything the Go side prints. Its timestamps are RFC 3339 — with
+/// fractional seconds on some fields and not others, which the plain .iso8601 strategy
+/// rejects outright.
+enum AIUJSON {
+    static func decoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            let formatter = ISO8601DateFormatter()
+            if let date = formatter.date(from: raw) { return date }
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = formatter.date(from: raw) { return date }
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                    debugDescription: "bad date \(raw)"))
+        }
+        return decoder
+    }
+}
+
 struct CLIResult: Sendable {
     let status: Int32
     let stdout: Data
@@ -203,15 +222,52 @@ final class Store {
         }
     }
 
+    var update = UpdateCheck.State()
+    var checkingUpdate = false
+
+    var autoCheckUpdates: Bool {
+        didSet {
+            UserDefaults.standard.set(autoCheckUpdates, forKey: "autoCheckUpdates")
+            scheduleUpdateTimer()
+            if autoCheckUpdates { Task { await checkForUpdates() } }
+        }
+    }
+
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var resetTimer: Timer?
+    @ObservationIgnored private var updateTimer: Timer?
     @ObservationIgnored private var loginProcess: Process?
 
     init() {
         let saved = UserDefaults.standard.integer(forKey: "refreshMinutes")
         refreshMinutes = saved >= 5 ? saved : 5
+        // On by default: the check is one cached request every six hours, it reaches
+        // only GitHub's public release endpoint, and it never installs anything.
+        autoCheckUpdates = UserDefaults.standard.object(forKey: "autoCheckUpdates") as? Bool ?? true
         scheduleTimer()
+        scheduleUpdateTimer()
         Task { await refresh() }
+        if autoCheckUpdates { Task { await checkForUpdates() } }
+    }
+
+    /// The Go side caches for six hours, so checking on that cadence is as often as it
+    /// can tell us anything new. A machine left running still notices a release the day
+    /// it lands.
+    private func scheduleUpdateTimer() {
+        updateTimer?.invalidate()
+        updateTimer = nil
+        guard autoCheckUpdates else { return }
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 6 * 60 * 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in await self?.checkForUpdates() }
+        }
+    }
+
+    /// force skips the shared cache — what the Check Now button does, and nothing else.
+    func checkForUpdates(force: Bool = false) async {
+        if checkingUpdate { return }
+        checkingUpdate = true
+        defer { checkingUpdate = false }
+        update = await UpdateCheck.run(force: force)
     }
 
     private func scheduleTimer() {
@@ -274,16 +330,7 @@ final class Store {
 
     private func decode(_ data: Data) {
         do {
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .custom { decoder in
-                let raw = try decoder.singleValueContainer().decode(String.self)
-                let formatter = ISO8601DateFormatter()
-                if let date = formatter.date(from: raw) { return date }
-                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                if let date = formatter.date(from: raw) { return date }
-                throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "bad date \(raw)"))
-            }
-            accounts = try decoder.decode([Account].self, from: data)
+            accounts = try AIUJSON.decoder().decode([Account].self, from: data)
             lastError = nil
             updatedAt = Date()
             barImage = renderBarImage()
@@ -967,6 +1014,38 @@ enum CLILink {
     }
 }
 
+/// Whether a newer release exists. The bundled `aiu` does the asking, so GitHub is
+/// talked to in one place and the 6-hour cache is shared with the terminal.
+enum UpdateCheck {
+    struct State: Decodable, Equatable {
+        var state = ""
+        var current = ""
+        var latest: String?
+        var url: String?
+        var source = "unknown"
+        var command: String?
+        var checkedAt: Date?
+        var cached = false
+        var error: String?
+        var detail = ""
+
+        var isAvailable: Bool { state == "available" }
+        var isDevelopment: Bool { state == "development" }
+        /// Nothing has been asked yet, so the pane should say nothing rather than guess.
+        var isUnchecked: Bool { state.isEmpty }
+    }
+
+    static func run(force: Bool) async -> State {
+        let result = await CLI.run(force ? ["update", "--json", "--force"] : ["update", "--json"])
+        if var state = try? AIUJSON.decoder().decode(State.self, from: result.stdout) {
+            if state.error == nil && result.status != 0 { state.error = result.message }
+            return state
+        }
+        return State(state: "unknown",
+                     detail: result.message.isEmpty ? "could not check for updates" : result.message)
+    }
+}
+
 struct SettingsView: View {
     static let trademarkNotice = "Claude is a trademark of Anthropic, PBC. OpenAI and Codex are trademarks of OpenAI. AIU is not affiliated with or endorsed by either; their logos only label whose usage is shown."
     static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
@@ -975,6 +1054,7 @@ struct SettingsView: View {
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var launchError: String?
     @State private var link = CLILink.State()
+    @State private var copiedCommand = false
 
     /// Install or remove the `aiu` command without leaving the panel.
     @ViewBuilder
@@ -1005,6 +1085,68 @@ struct SettingsView: View {
         }
     }
 
+    /// Whether a newer release exists, and the command that installs it. aiu never
+    /// replaces itself — a Homebrew install belongs to Homebrew, and a build from a
+    /// clone belongs to the clone — so this reports and hands over the command.
+    @ViewBuilder
+    private var updates: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Toggle("Check for updates automatically", isOn: Binding(
+                    get: { store.autoCheckUpdates },
+                    set: { store.autoCheckUpdates = $0 }
+                ))
+                Text(updateSummary)
+                    .font(.caption2)
+                    .foregroundStyle(store.update.isAvailable ? AnyShapeStyle(Palette.accent) : AnyShapeStyle(.tertiary))
+                    .wrapsVertically()
+            }
+            Spacer(minLength: 8)
+            Button(store.checkingUpdate ? "Checking…" : "Check Now") {
+                Task { await store.checkForUpdates(force: true) }
+            }
+            .buttonStyle(.glass)
+            .disabled(store.checkingUpdate)
+        }
+
+        if store.update.isAvailable, let command = store.update.command, !command.isEmpty {
+            HStack(spacing: 6) {
+                Text(command)
+                    .font(.system(.caption2, design: .monospaced))
+                    .textSelection(.enabled)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(.primary.opacity(0.07), in: .rect(cornerRadius: 6))
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(command, forType: .string)
+                    copiedCommand = true
+                    Task { try? await Task.sleep(for: .seconds(2)); copiedCommand = false }
+                } label: {
+                    Image(systemName: copiedCommand ? "checkmark" : "document.on.document")
+                }
+                .buttonStyle(.glass)
+                .controlSize(.small)
+                .help("Copy the command")
+                Spacer(minLength: 0)
+                if let raw = store.update.url, let link = URL(string: raw) {
+                    Link("Release notes", destination: link).font(.caption2)
+                }
+            }
+        }
+    }
+
+    /// One line about where this build stands. An error only speaks up when there is no
+    /// answer to show instead, so a failed check behind a good one stays quiet.
+    private var updateSummary: String {
+        let state = store.update
+        if state.isUnchecked { return "AIU \(Self.version)" }
+        if state.state == "unknown", let error = state.error, !error.isEmpty { return error }
+        return state.detail
+    }
+
     var body: some View {
         @Bindable var store = store
         VStack(alignment: .leading, spacing: 12) {
@@ -1031,6 +1173,8 @@ struct SettingsView: View {
                 .foregroundStyle(.tertiary)
                 .wrapsVertically()
             Divider().opacity(0.4)
+            updates
+            Divider().opacity(0.4)
             Text(Self.trademarkNotice)
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
@@ -1046,7 +1190,11 @@ struct SettingsView: View {
         }
         .padding(14)
         .cardSurface()
-        .task { link = await CLILink.run("status") }
+        .task {
+            link = await CLILink.run("status")
+            // Cached, so opening Settings repeatedly costs nothing.
+            if store.update.isUnchecked { await store.checkForUpdates() }
+        }
     }
 }
 

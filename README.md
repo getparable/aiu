@@ -49,10 +49,23 @@ aiu watch                      # live view
 aiu switch work                # point Claude Code at a tracked account
 aiu switch codex:alt           # same for Codex
 aiu list | remove <name> | sync | whoami
+aiu update                     # is there a newer release?
 aiu --json                     # for scripts and status bars
 ```
 
 For a second account, sign in from a private browser window so the sign-in page does not reuse the account your browser is already logged in to.
+
+## Updates
+
+`aiu update` says whether a newer release exists and prints the command that installs
+it. **Settings → Check for updates automatically** does the same thing every six hours
+and shows the result in the panel; turn it off and nothing is ever requested.
+
+aiu never replaces itself. A Homebrew install belongs to Homebrew, so it tells you to
+run `brew upgrade getparable/tap/aiu`; a build from a clone is told to pull and
+`make install`. The check reaches GitHub's public release endpoint and nothing else,
+answers from a six-hour cache shared between the panel and the terminal, and a check
+that fails never claims an update is available.
 
 ## What "use next" means
 
