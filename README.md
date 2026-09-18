@@ -11,13 +11,31 @@ Rate limits and reset times for several **Claude** (Pro/Max) and **ChatGPT/Codex
 ## Install
 
 ```sh
+brew install getparable/tap/aiu
+```
+
+Then put the menu bar app where macOS looks for apps, so Launch at Login and Spotlight
+find it. That path stays valid across upgrades, so the link survives `brew upgrade aiu`:
+
+```sh
+ln -sfn "$(brew --prefix aiu)/AIU.app" ~/Applications/AIU.app
+open ~/Applications/AIU.app
+```
+
+The formula builds from source on your own machine, so the app carries no quarantine
+flag and Gatekeeper never asks — it is ad-hoc signed, not notarized.
+
+From a clone instead:
+
+```sh
 make install        # builds AIU.app into ~/Applications and links ~/.local/bin/aiu
 ```
 
 A downloaded `AIU.app` carries the CLI inside it; **Settings → Terminal command → Install**
 adds the `~/.local/bin/aiu` shortcut (same as `aiu link install`).
 
-Requires macOS 26, Go 1.27+ and Xcode 27 (Swift 6.4) to build.
+Requires macOS 26, Go 1.27+ and Xcode 27 (Swift 6.4) to build — building the panel needs
+the Swift 6.4 toolchain, so Xcode 26 is not enough.
 
 ## Use
 
