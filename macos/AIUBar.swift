@@ -191,6 +191,7 @@ final class Store {
     }
 
     @ObservationIgnored private var timer: Timer?
+    @ObservationIgnored private var resetTimer: Timer?
     @ObservationIgnored private var loginProcess: Process?
 
     init() {
@@ -203,6 +204,19 @@ final class Store {
     private func scheduleTimer() {
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: TimeInterval(refreshMinutes * 60), repeats: true) { [weak self] _ in
+            Task { @MainActor in await self?.refresh() }
+        }
+    }
+
+    /// Refetches once the next window resets. aiu spaces each account's requests 5 minutes
+    /// apart and answers from its cache until then, so firing sooner would show the old numbers.
+    private func scheduleResetRefresh() {
+        resetTimer?.invalidate()
+        let now = Date()
+        guard let next = accounts.flatMap(\.windows).compactMap(\.resetsAt).filter({ $0 > now }).min() else { return }
+        let spacingClears = (updatedAt ?? now).addingTimeInterval(5 * 60 + 5)
+        let fireAt = max(next.addingTimeInterval(15), spacingClears)
+        resetTimer = Timer.scheduledTimer(withTimeInterval: fireAt.timeIntervalSince(now), repeats: false) { [weak self] _ in
             Task { @MainActor in await self?.refresh() }
         }
     }
@@ -253,6 +267,7 @@ final class Store {
             lastError = nil
             updatedAt = Date()
             barImage = renderBarImage()
+            scheduleResetRefresh()
         } catch {
             lastError = "Could not read aiu output: \(error.localizedDescription)"
         }
@@ -424,8 +439,8 @@ extension String {
 
 // MARK: - Formatting
 
-func compactInterval(until date: Date) -> String {
-    let seconds = Int(date.timeIntervalSinceNow)
+func compactInterval(until date: Date, from now: Date = Date()) -> String {
+    let seconds = Int(date.timeIntervalSince(now))
     guard seconds > 0 else { return "now" }
     let minutes = (seconds + 30) / 60
     let days = minutes / 1440, hours = (minutes % 1440) / 60, mins = minutes % 60
@@ -478,11 +493,13 @@ struct WindowRow: View {
                 .font(.caption.weight(window.percent >= 80 ? .bold : .medium))
                 .monospacedDigit()
                 .frame(width: 34, alignment: .trailing)
-            Text(window.resetsAt.map { compactInterval(until: $0) } ?? "")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .monospacedDigit()
-                .frame(width: 46, alignment: .trailing)
+            TimelineView(.everyMinute) { context in
+                Text(window.resetsAt.map { compactInterval(until: $0, from: context.date) } ?? "")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .monospacedDigit()
+            }
+            .frame(width: 46, alignment: .trailing)
         }
         .help(window.resetsAt.map { "\(window.label) resets \($0.formatted(date: .abbreviated, time: .shortened))" } ?? window.label)
     }
@@ -683,9 +700,11 @@ struct SummaryCard: View {
                         Text(active.label)
                             .font(.system(.body, weight: .semibold))
                             .lineLimit(1)
-                        Text(limitText(active))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        TimelineView(.everyMinute) { context in
+                            Text(limitText(active, now: context.date))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 } else {
                     Text("not signed in to \(provider.client)")
@@ -710,11 +729,11 @@ struct SummaryCard: View {
     }
 
     /// The window that actually limits the account right now, and when it frees up.
-    private func limitText(_ account: Account) -> String {
+    private func limitText(_ account: Account, now: Date) -> String {
         let windows = account.windows.filter { $0.percent >= account.tightest - 0.01 }
         guard let limiting = windows.first ?? account.windows.first else { return "" }
         guard let resets = limiting.resetsAt else { return limiting.shortLabel }
-        return "\(limiting.shortLabel) resets in \(compactInterval(until: resets))"
+        return "\(limiting.shortLabel) resets in \(compactInterval(until: resets, from: now))"
     }
 }
 
