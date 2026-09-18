@@ -103,7 +103,10 @@ func (c *Config) persistAccount(ctx context.Context, working *Record, label, sou
 // CaptureClaudeCode adds the account Claude Code is signed in as, sharing its token
 // chain rather than minting a second grant.
 func (c *Config) CaptureClaudeCode(ctx context.Context, label string) (*SavedAccount, error) {
-	live := c.ReadClaudeCode()
+	live, err := c.readClaudeCode()
+	if err != nil {
+		return nil, err
+	}
 	if live == nil {
 		return nil, errors.New("no Claude Code login found — sign in with `claude` first, or use `aiu login`")
 	}
@@ -121,8 +124,8 @@ func (c *Config) CaptureClaudeCode(ctx context.Context, label string) (*SavedAcc
 			working.Scopes = append(working.Scopes, str(s))
 		}
 	}
-	rotated := false
 	if working.IsExpired(c.now(), refreshMargin) {
+		spent := working.RefreshToken
 		fresh, err := c.refreshClaude(ctx, working.RefreshToken)
 		if err != nil {
 			return nil, err
@@ -134,16 +137,13 @@ func (c *Config) CaptureClaudeCode(ctx context.Context, label string) (*SavedAcc
 		if fresh.Scopes != nil {
 			working.Scopes = fresh.Scopes
 		}
-		rotated = true
+		if _, err := c.handBackClaude(spent, working); err != nil {
+			return nil, fmt.Errorf("refreshed Claude Code's token but could not save its replacement: %w", err)
+		}
 	}
 	saved, err := c.persistAccount(ctx, working, label, "claude-code", true)
 	if err != nil {
 		return nil, err
-	}
-	if rotated {
-		if _, err := c.writeClaudeCode(live, claudeTokenPatch(working), false); err != nil {
-			c.Warn(fmt.Sprintf("captured %s but could not write the rotated token back to Claude Code: %v", saved.Record.Email, err))
-		}
 	}
 	return saved, nil
 }
@@ -158,22 +158,20 @@ func (c *Config) CaptureCodex(ctx context.Context, label string) (*SavedAccount,
 		return nil, fmt.Errorf("Codex is signed in with %s, not a ChatGPT login — only ChatGPT logins carry usage limits", mode)
 	}
 	working := codexRecordFromLive(live)
-	rotated := false
 	if working.IsExpired(c.now(), refreshMargin) {
+		spent := working.RefreshToken
 		fresh, err := c.refreshCodex(ctx, working)
 		if err != nil {
 			return nil, err
 		}
-		working, rotated = fresh, true
+		working = fresh
+		if _, err := c.handBackCodex(spent, working); err != nil {
+			return nil, fmt.Errorf("refreshed Codex's token but could not save its replacement: %w", err)
+		}
 	}
 	saved, err := c.persistAccount(ctx, working, label, "codex-cli", false)
 	if err != nil {
 		return nil, err
-	}
-	if rotated {
-		if _, err := c.writeCodexAuth(live, working); err != nil {
-			c.Warn(fmt.Sprintf("captured %s but could not write the rotated token back to Codex: %v", saved.Record.Email, err))
-		}
 	}
 	return saved, nil
 }

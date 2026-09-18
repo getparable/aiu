@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -9,6 +10,14 @@ import (
 	"runtime"
 	"time"
 )
+
+// All AIU configurations for this user lock the same CLI destination.
+func (c *Config) liveLockPath(provider Provider) string {
+	if provider == Claude {
+		return filepath.Join(c.ClaudeDir, ".aiu-credentials.lock")
+	}
+	return filepath.Join(c.CodexHome, ".aiu-auth.lock")
+}
 
 // LiveClaude is the login Claude Code holds right now. Doc keeps every top-level key
 // (e.g. mcpOAuth) so a write-back never drops what Claude Code stored beside it.
@@ -31,27 +40,40 @@ func (l *LiveClaude) int64Field(key string) int64 {
 
 // ReadClaudeCode returns Claude Code's current login, or nil when it has none.
 func (c *Config) ReadClaudeCode() *LiveClaude {
+	live, _ := c.readClaudeCode()
+	return live
+}
+
+func (c *Config) readClaudeCode() (*LiveClaude, error) {
 	file := filepath.Join(c.ClaudeDir, ".credentials.json")
 	if data, err := os.ReadFile(file); err == nil {
 		if l := parseLiveClaude(data); l != nil {
 			l.fromFile, l.path = true, file
-			return l
+			return l, nil
 		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
 	}
 	if runtime.GOOS != "darwin" {
-		return nil
+		return nil, nil
 	}
-	raw, ok := keychainRead(c.ClaudeService, "")
+	raw, account, ok, err := readKeychainItem(c.ClaudeService, "")
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	l := parseLiveClaude([]byte(raw))
 	if l == nil {
-		return nil
+		return nil, nil
 	}
 	l.service = c.ClaudeService
-	l.account = firstNonEmpty(keychainAccountName(c.ClaudeService), currentUser())
-	return l
+	if account == "" {
+		return nil, errors.New("Claude Code Keychain item has no account attribute")
+	}
+	l.account = account
+	return l, nil
 }
 
 func parseLiveClaude(data []byte) *LiveClaude {
@@ -79,6 +101,21 @@ func currentUser() string {
 // writeClaudeCode merges patch into Claude Code's oauth block (or replaces the block)
 // and writes it back where it came from. live may be nil when Claude Code has no login.
 func (c *Config) writeClaudeCode(live *LiveClaude, patch map[string]any, replace bool) (*LiveClaude, error) {
+	var written *LiveClaude
+	err := withFileLock(c.liveLockPath(Claude), func() error {
+		// Use the newest document so another AIU write cannot lose sibling fields.
+		current, readErr := c.readClaudeCode()
+		if readErr != nil {
+			return readErr
+		}
+		var writeErr error
+		written, writeErr = c.writeClaudeCodeUnlocked(current, patch, replace)
+		return writeErr
+	})
+	return written, err
+}
+
+func (c *Config) writeClaudeCodeUnlocked(live *LiveClaude, patch map[string]any, replace bool) (*LiveClaude, error) {
 	next := &LiveClaude{Doc: map[string]json.RawMessage{}, OAuth: map[string]any{}}
 	if live != nil {
 		for k, v := range live.Doc {
@@ -116,6 +153,26 @@ func (c *Config) writeClaudeCode(live *LiveClaude, patch map[string]any, replace
 		err = keychainWrite(next.service, next.account, string(data))
 	}
 	return next, err
+}
+
+// handBackClaude only replaces the refresh token this operation spent. The read
+// and write share AIU's live credential lock. External writers do not use that
+// lock, so the reread narrows their race without eliminating it.
+func (c *Config) handBackClaude(spent string, r *Record) (bool, error) {
+	var changed bool
+	err := withFileLock(c.liveLockPath(Claude), func() error {
+		live, readErr := c.readClaudeCode()
+		if readErr != nil {
+			return readErr
+		}
+		if live == nil || live.refreshToken() != spent {
+			return nil
+		}
+		_, err := c.writeClaudeCodeUnlocked(live, claudeTokenPatch(r), false)
+		changed = err == nil
+		return err
+	})
+	return changed, err
 }
 
 func claudeTokenPatch(r *Record) map[string]any {
@@ -283,6 +340,16 @@ func codexRecordFromLive(l *LiveCodex) *Record {
 // writeCodexAuth stores a token set in auth.json the way `codex login` does, keeping
 // every other key. The directory is Codex's, so its mode is left alone.
 func (c *Config) writeCodexAuth(live *LiveCodex, r *Record) (*LiveCodex, error) {
+	var written *LiveCodex
+	err := withFileLock(c.liveLockPath(Codex), func() error {
+		var writeErr error
+		written, writeErr = c.writeCodexAuthUnlocked(c.ReadCodexAuth(), r)
+		return writeErr
+	})
+	return written, err
+}
+
+func (c *Config) writeCodexAuthUnlocked(live *LiveCodex, r *Record) (*LiveCodex, error) {
 	doc := map[string]any{}
 	if live != nil {
 		for k, v := range live.Doc {
@@ -313,4 +380,18 @@ func (c *Config) writeCodexAuth(live *LiveCodex, r *Record) (*LiveCodex, error) 
 		return nil, err
 	}
 	return &LiveCodex{Doc: doc, Tokens: tokens}, nil
+}
+
+func (c *Config) handBackCodex(spent string, r *Record) (bool, error) {
+	var changed bool
+	err := withFileLock(c.liveLockPath(Codex), func() error {
+		live := c.ReadCodexAuth()
+		if live == nil || live.refreshToken() != spent {
+			return nil
+		}
+		_, err := c.writeCodexAuthUnlocked(live, r)
+		changed = err == nil
+		return err
+	})
+	return changed, err
 }

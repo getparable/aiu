@@ -1,4 +1,4 @@
-VERSION   ?= 0.1.2
+VERSION   ?= 0.1.3
 BUILD     ?= $(shell git rev-list --count HEAD 2>/dev/null || echo 1)
 BUNDLE_ID ?= dev.aiu.menubar
 LDFLAGS    = -s -w -X github.com/getparable/aiu/internal/core.Version=$(VERSION)
@@ -22,7 +22,7 @@ ZIP             = $(DIST)/AIU-$(VERSION).zip
 .PHONY: build test icon app install uninstall release clean
 
 build:
-	go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/aiu
+	CGO_ENABLED=1 go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/aiu
 
 test:
 	go test -race ./...
@@ -44,14 +44,14 @@ app:
 	rm -rf $(APP)
 	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources bin
 ifeq ($(BIN_ARCH),universal)
-	GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o bin/aiu-arm64 ./cmd/aiu
-	GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o bin/aiu-amd64 ./cmd/aiu
+	CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 CC="clang -arch arm64" go build -ldflags "$(LDFLAGS)" -o bin/aiu-arm64 ./cmd/aiu
+	CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 CC="clang -arch x86_64" go build -ldflags "$(LDFLAGS)" -o bin/aiu-amd64 ./cmd/aiu
 	lipo -create -output $(APP)/Contents/MacOS/aiu bin/aiu-arm64 bin/aiu-amd64
 	$(SWIFT) -target arm64-apple-macosx26.0 macos/AIUBar.swift -o bin/AIUBar-arm64
 	$(SWIFT) -target x86_64-apple-macosx26.0 macos/AIUBar.swift -o bin/AIUBar-x86_64
 	lipo -create -output $(APP)/Contents/MacOS/AIUBar bin/AIUBar-arm64 bin/AIUBar-x86_64
 else
-	go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/aiu
+	CGO_ENABLED=1 go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/aiu
 	cp $(BIN) $(APP)/Contents/MacOS/aiu
 	$(SWIFT) -target $(shell uname -m)-apple-macosx26.0 macos/AIUBar.swift -o $(APP)/Contents/MacOS/AIUBar
 endif

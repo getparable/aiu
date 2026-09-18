@@ -1,20 +1,10 @@
 package core
 
 import (
-	"bytes"
-	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"os/exec"
-	"regexp"
-	"strings"
 	"time"
-	"unicode/utf8"
 )
-
-// Fixed path, not a PATH lookup: this binary handles every token on the machine.
-const securityBin = "/usr/bin/security"
 
 // Record is one account's stored login. Times are Unix milliseconds, matching what
 // Claude Code writes, so values copy across without conversion.
@@ -144,7 +134,10 @@ func (c *Config) fillMissingOrgs(idx *Index) {
 			c.Warn("could not re-key " + e.Email + ": " + err.Error())
 			continue
 		}
-		_ = c.tokenDelete(oldKey)
+		if err := c.tokenDelete(oldKey); err != nil {
+			c.Warn("could not remove the old key for " + e.Email + ": " + err.Error())
+			continue
+		}
 		e.Org, e.OrgName, changed = org, orgName, true
 	}
 	if changed {
@@ -158,7 +151,10 @@ func (c *Config) saveIndex(idx *Index) error { return writePrivateJSON(c.indexFi
 
 func (c *Config) tokenGet(key string) (*Record, error) {
 	if c.UseKeychain {
-		raw, ok := keychainRead(c.StoreService, key)
+		raw, ok, err := keychainRead(c.StoreService, key)
+		if err != nil {
+			return nil, err
+		}
 		if !ok {
 			return nil, nil
 		}
@@ -183,25 +179,28 @@ func (c *Config) tokenSet(key string, r *Record) error {
 		}
 		return keychainWrite(c.StoreService, key, string(data))
 	}
-	store := map[string]*Record{}
-	if _, err := readJSONFile(c.fileStore(), &store); err != nil {
-		return err
-	}
-	store[key] = r
-	return writePrivateJSON(c.fileStore(), store)
+	return withFileLock(c.fileStore()+".lock", func() error {
+		store := map[string]*Record{}
+		if _, err := readJSONFile(c.fileStore(), &store); err != nil {
+			return err
+		}
+		store[key] = r
+		return writePrivateJSON(c.fileStore(), store)
+	})
 }
 
 func (c *Config) tokenDelete(key string) error {
 	if c.UseKeychain {
-		keychainDelete(c.StoreService, key)
-		return nil
+		return keychainDelete(c.StoreService, key)
 	}
-	store := map[string]*Record{}
-	if _, err := readJSONFile(c.fileStore(), &store); err != nil {
-		return err
-	}
-	delete(store, key)
-	return writePrivateJSON(c.fileStore(), store)
+	return withFileLock(c.fileStore()+".lock", func() error {
+		store := map[string]*Record{}
+		if _, err := readJSONFile(c.fileStore(), &store); err != nil {
+			return err
+		}
+		delete(store, key)
+		return writePrivateJSON(c.fileStore(), store)
+	})
 }
 
 // LoadRecords joins the index with the stored tokens.
@@ -220,66 +219,4 @@ func (c *Config) LoadRecords(idx *Index) ([]*Record, error) {
 		out = append(out, r)
 	}
 	return out, nil
-}
-
-// ---------------------------------------------------------------- keychain
-
-func security(args ...string) (string, string, error) {
-	var stdout, stderr bytes.Buffer
-	cmd := exec.Command(securityBin, args...)
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
-	return stdout.String(), stderr.String(), err
-}
-
-// `security -w` prints a secret as hex when it holds bytes it will not print raw.
-func decodeKeychainSecret(raw string) string {
-	if len(raw) < 2 || len(raw)%2 != 0 {
-		return raw
-	}
-	b, err := hex.DecodeString(raw)
-	if err != nil || !utf8.Valid(b) {
-		return raw
-	}
-	return string(b)
-}
-
-func keychainRead(service, account string) (string, bool) {
-	args := []string{"find-generic-password", "-s", service}
-	if account != "" {
-		args = append(args, "-a", account)
-	}
-	out, _, err := security(append(args, "-w")...)
-	if err != nil {
-		return "", false
-	}
-	return decodeKeychainSecret(strings.TrimSuffix(out, "\n")), true
-}
-
-var acctPattern = regexp.MustCompile(`"acct"<blob>="([^"]*)"`)
-
-func keychainAccountName(service string) string {
-	out, _, err := security("find-generic-password", "-s", service)
-	if err != nil {
-		return ""
-	}
-	if m := acctPattern.FindStringSubmatch(out); m != nil {
-		return m[1]
-	}
-	return ""
-}
-
-// keychainWrite passes the secret as an argument, briefly visible to same-user
-// processes via ps. The stdin form truncates at 128 bytes, far below a token record,
-// and any same-user process can already read the item back through `security`.
-func keychainWrite(service, account, secret string) error {
-	_, stderr, err := security("add-generic-password", "-U", "-s", service, "-a", account, "-w", secret)
-	if err != nil {
-		return errors.New("keychain write failed: " + Redact(strings.TrimSpace(stderr)))
-	}
-	return nil
-}
-
-func keychainDelete(service, account string) {
-	_, _, _ = security("delete-generic-password", "-s", service, "-a", account)
 }
