@@ -108,3 +108,11 @@ Distributing to other Macs needs a **Developer ID Application** certificate and 
 ## Trademarks
 
 Claude is a trademark of Anthropic, PBC. OpenAI and Codex are trademarks of OpenAI. Their logos (via [Simple Icons](https://simpleicons.org), whose [disclaimer](https://github.com/simple-icons/simple-icons/blob/develop/DISCLAIMER.md) applies) are used unmodified and only to label which provider's usage is shown. AIU is not affiliated with or endorsed by either company, and the marks will be removed on request. The AIU app icon contains no third-party marks.
+
+## License
+
+[MIT](LICENSE) © 2026 Michael Visser.
+
+aiu stores and switches credentials for accounts you already hold. It is for one
+person managing their own logins; using it to work around a provider's limits is
+between you and that provider's terms, not something this license speaks to.
