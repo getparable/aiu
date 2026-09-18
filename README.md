@@ -38,8 +38,9 @@ make install        # builds AIU.app into ~/Applications and links ~/.local/bin/
 A downloaded `AIU.app` carries the CLI inside it; **Settings → Terminal command → Install**
 adds the `~/.local/bin/aiu` shortcut (same as `aiu link install`).
 
-Building from source requires macOS 26, Go 1.27+ and Xcode 27 — the panel needs the
-Swift 6.4 toolchain, so Xcode 26 is not enough. Pouring the bottle requires none of it.
+macOS 26 is required either way: the app targets it, and the bottle is built against it.
+Building from source additionally needs Go 1.27+ and Xcode 27 — the panel needs the
+Swift 6.4 toolchain, so Xcode 26 is not enough — and pouring the bottle needs neither.
 
 ## Use
 
