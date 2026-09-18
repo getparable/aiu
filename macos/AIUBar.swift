@@ -469,6 +469,22 @@ func compactInterval(until date: Date, from now: Date = Date()) -> String {
     return "\(mins)m"
 }
 
+// MARK: - Colour
+
+/// The panel has exactly one colour, and it is the system's. Taking it from
+/// `Color.accentColor` means it follows System Settings → Appearance → Accent — Apple
+/// blue unless the user chose otherwise — and tracks Dark Mode and Increase Contrast
+/// without us doing anything.
+///
+/// Everything else stays monochrome on purpose. The accent is the panel's one piece of
+/// punctuation: it says which account is live. Colouring the bars and percentages too
+/// would bury that under a wall of tinting, and the numbers already carry their own
+/// weight.
+enum Palette {
+    /// The live account's dot, and the tint on the card holding it.
+    static let accent = Color.accentColor
+}
+
 // MARK: - Views
 
 struct UsageBar: View {
@@ -617,10 +633,10 @@ struct LiveDot: View {
 
     var body: some View {
         Circle()
-            .fill(on ? Color.accentColor : Color.primary.opacity(0.25))
+            .fill(on ? Palette.accent : Color.primary.opacity(0.25))
             .frame(width: 7, height: 7)
-            .overlay(Circle().stroke(Color.accentColor.opacity(on ? 0.3 : 0), lineWidth: 3))
-            .shadow(color: Color.accentColor.opacity(on ? 0.6 : 0), radius: 4)
+            .overlay(Circle().stroke(Palette.accent.opacity(on ? 0.3 : 0), lineWidth: 3))
+            .shadow(color: Palette.accent.opacity(on ? 0.6 : 0), radius: 4)
             .padding(.trailing, on ? 2 : 0)
     }
 }
@@ -672,9 +688,8 @@ struct ProviderSection: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 6) {
                     LogoView(provider: provider, size: 13)
-                    Text(provider.name.uppercased())
-                        .font(.caption.weight(.semibold))
-                        .tracking(0.6)
+                    Text(provider.name)
+                        .font(.subheadline.weight(.semibold))
                     Spacer()
                 }
                 .foregroundStyle(.secondary)
@@ -863,7 +878,6 @@ struct AddAccountView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .tint(Color.secondary) // monochrome selection instead of accent blue
 
                 TextField("Label (optional)", text: $label)
                     .textFieldStyle(.roundedBorder)
@@ -1169,13 +1183,13 @@ extension View {
         background {
             ZStack {
                 Rectangle().fill(.thickMaterial)
-                Color.accentColor.opacity(active ? 0.13 : 0)
+                Palette.accent.opacity(active ? 0.13 : 0)
             }
             .clipShape(.rect(cornerRadius: cornerRadius))
         }
         .overlay(
             RoundedRectangle(cornerRadius: cornerRadius)
-                .strokeBorder(active ? Color.accentColor.opacity(0.30) : .primary.opacity(0.07), lineWidth: 1)
+                .strokeBorder(active ? Palette.accent.opacity(0.30) : .primary.opacity(0.07), lineWidth: 1)
         )
     }
 
