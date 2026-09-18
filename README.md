@@ -22,8 +22,12 @@ ln -sfn "$(brew --prefix aiu)/AIU.app" ~/Applications/AIU.app
 open ~/Applications/AIU.app
 ```
 
-The formula builds from source on your own machine, so the app carries no quarantine
-flag and Gatekeeper never asks — it is ad-hoc signed, not notarized.
+On Apple Silicon this pours a prebuilt bottle in a couple of seconds — no compiler and
+no Xcode. An Intel Mac has no bottle and builds from source instead, which is what the
+Xcode requirement below is for.
+
+Either way the app is built or packaged outside a browser download, so it carries no
+quarantine flag and Gatekeeper never asks. It is ad-hoc signed, not notarized.
 
 From a clone instead:
 
@@ -34,8 +38,8 @@ make install        # builds AIU.app into ~/Applications and links ~/.local/bin/
 A downloaded `AIU.app` carries the CLI inside it; **Settings → Terminal command → Install**
 adds the `~/.local/bin/aiu` shortcut (same as `aiu link install`).
 
-Requires macOS 26, Go 1.27+ and Xcode 27 (Swift 6.4) to build — building the panel needs
-the Swift 6.4 toolchain, so Xcode 26 is not enough.
+Building from source requires macOS 26, Go 1.27+ and Xcode 27 — the panel needs the
+Swift 6.4 toolchain, so Xcode 26 is not enough. Pouring the bottle requires none of it.
 
 ## Use
 
