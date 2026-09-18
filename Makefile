@@ -40,7 +40,14 @@ icon:
 
 # AIUBar (SwiftUI, the panel) and aiu (Go, everything else) ship side by side.
 # BIN_ARCH=universal builds both for arm64 and x86_64 (used by release).
+#
+# The first line guards -disable-sandbox, because nothing else does. Dropping it builds
+# fine here and on GitHub's runners — neither is sandboxed — and fails only inside
+# Homebrew's builder, reported as "Store does not conform to Observable" at every use
+# site rather than as a build-environment problem. So CI stays green and `brew install`
+# breaks. Fail here instead, for whoever removed it, while they still have the context.
 app:
+	@case "$(SWIFT)" in *-disable-sandbox*) ;; *) 	  echo "error: SWIFT has lost -disable-sandbox — see the comment on it; without the flag"; 	  echo "       @Observable silently fails to expand wherever the build is already sandboxed"; 	  exit 1 ;; esac
 	rm -rf $(APP)
 	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources bin
 ifeq ($(BIN_ARCH),universal)
