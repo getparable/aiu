@@ -354,14 +354,19 @@ final class Store {
     }
 
     func switchTo(_ account: Account) async {
+        let switchMessage = account.kind == .codex
+            ? "\(account.email)\n\nStart a new Codex session to use this account."
+            : "\(account.email)\n\nClaude Code will use this account when it next reads its credentials."
         guard confirm(
             title: "Switch \(account.kind.client) to \(account.label)?",
-            message: "\(account.email)\n\nRunning \(account.kind.client) sessions follow within about 30 seconds.",
+            message: switchMessage,
             action: "Switch"
         ) else { return }
         let result = await CLI.run(["switch", account.id])
         if result.status == 0 {
-            flash("\(account.kind.client) now uses \(account.label)")
+            flash(account.kind == .codex
+                ? "New Codex sessions will use \(account.label)"
+                : "Claude Code now uses \(account.label)")
             await refresh()
         } else {
             lastError = result.message

@@ -103,6 +103,8 @@ Reading usage costs no quota, but the endpoints throttle hard. Every AIU process
 | Claude Code's login (read; written by `switch` and refresh hand-back) | Keychain `Claude Code-credentials`, `~/.claude.json` |
 | Codex's login (same) | `~/.codex/auth.json` |
 
+Keychain access may prompt for approval when AIU first reads or updates an existing item. If AIU creates Claude Code's Keychain item during a switch, macOS may ask Claude Code to approve access on its next read. Release builds enable cgo for native Keychain access. Builds without cgo cannot read Keychain items, even when AIU's own store uses `AIU_STORE=file`.
+
 Tokens are only ever sent to Anthropic's and OpenAI's own hosts. There is no telemetry.
 
 ## Developing the panel
@@ -132,9 +134,9 @@ Distributing to other Macs needs a **Developer ID Application** certificate and 
    ```
 3. **Release**: set the bundle id to a domain you own, then
    ```sh
-   make release VERSION=0.2.0 BUNDLE_ID=com.example.aiu
+   make release VERSION=0.1.3 BUNDLE_ID=com.example.aiu
    ```
-   This runs the tests, builds a universal app, signs both binaries with the hardened runtime, notarizes, staples, and writes `dist/AIU-0.2.0.zip`.
+   This runs the tests, builds a universal app, signs both binaries with the hardened runtime, notarizes, staples, and writes `dist/AIU-0.1.3.zip`.
 
 ## Trademarks
 

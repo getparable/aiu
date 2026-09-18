@@ -18,7 +18,7 @@ import (
 // ensureFresh refreshes r when its access token is (nearly) expired, stores the new
 // pair, and hands it back to the CLI when the CLI still holds the refresh token just
 // spent — otherwise the CLI's next run would redeem a retired token and lose its login.
-func (c *Config) ensureFresh(ctx context.Context, r *Record, liveClaude *LiveClaude, liveCodex *LiveCodex, force bool) (*Record, error) {
+func (c *Config) ensureFresh(ctx context.Context, r *Record, _ *LiveClaude, _ *LiveCodex, force bool) (*Record, error) {
 	if !force && !r.IsExpired(c.now(), refreshMargin) {
 		return r, nil
 	}
@@ -50,22 +50,18 @@ func (c *Config) ensureFresh(ctx context.Context, r *Record, liveClaude *LiveCla
 		}
 	}
 	next.UpdatedAt = c.now().UnixMilli()
+	switch {
+	case r.Provider == Claude:
+		if _, err := c.handBackClaude(spent, &next); err != nil {
+			c.Warn(fmt.Sprintf("refreshed %s but could not update Claude Code's credentials: %v", r.Email, err))
+		}
+	case r.Provider == Codex:
+		if _, err := c.handBackCodex(spent, &next); err != nil {
+			c.Warn(fmt.Sprintf("refreshed %s but could not update Codex's auth.json: %v", r.Email, err))
+		}
+	}
 	if err := c.tokenSet(next.StoreKey(), &next); err != nil {
 		return nil, fmt.Errorf("refreshed %s but could not store the new token: %w", r.Email, err)
-	}
-	switch {
-	case r.Provider == Claude && liveClaude != nil && liveClaude.refreshToken() == spent:
-		if written, err := c.writeClaudeCode(liveClaude, claudeTokenPatch(&next), false); err != nil {
-			c.Warn(fmt.Sprintf("refreshed %s but could not update Claude Code's credentials: %v", r.Email, err))
-		} else {
-			*liveClaude = *written
-		}
-	case r.Provider == Codex && liveCodex != nil && liveCodex.refreshToken() == spent:
-		if written, err := c.writeCodexAuth(liveCodex, &next); err != nil {
-			c.Warn(fmt.Sprintf("refreshed %s but could not update Codex's auth.json: %v", r.Email, err))
-		} else {
-			*liveCodex = *written
-		}
 	}
 	return &next, nil
 }
