@@ -134,6 +134,98 @@ func reason(f Fitness, flagshipMatters bool) string {
 	return strings.Join(parts, " · ")
 }
 
+// Ranked is one account's place in a provider's ranking, with the few words the switcher
+// shows beside it.
+type Ranked struct {
+	Result *Result
+	Fit    Fitness
+	Band   int
+	Note   string // "43% left", "back in 4d 16h", "5h limit hit"
+	Reason string // the fuller line, for whichever account becomes the pick
+}
+
+// Ranking is one provider's accounts in order, best first.
+type Ranking struct {
+	Accounts []Ranked
+	// FlagshipMatters is false when no switchable account reports a flagship window —
+	// Codex reports none — and the gate then holds for nobody rather than against everybody.
+	FlagshipMatters bool
+}
+
+// Best is the account to work in next, or nil when none can be switched to.
+func (r Ranking) Best() *Ranked {
+	for i := range r.Accounts {
+		if switchable(r.Accounts[i].Result) {
+			return &r.Accounts[i]
+		}
+	}
+	return nil
+}
+
+// Rank orders one provider's accounts, across every address, best first: 5h window free,
+// flagship model still there, most weekly capacity for the plan. Accounts that cannot be
+// switched to keep their places at the end — the switcher still lists them, greyed, and
+// their note says why.
+func Rank(results []*Result, now time.Time) Ranking {
+	out := Ranking{Accounts: make([]Ranked, 0, len(results))}
+	for _, r := range results {
+		fit := FitnessOf(TierLabel(r.Record), NormalizeWindows(r.Usage, now))
+		if switchable(r) && fit.Flagship >= 0 {
+			out.FlagshipMatters = true
+		}
+		out.Accounts = append(out.Accounts, Ranked{Result: r, Fit: fit})
+	}
+	for i := range out.Accounts {
+		a := &out.Accounts[i]
+		a.Band = band(a.Fit, out.FlagshipMatters)
+		a.Note = statusNote(a.Fit, a.Result, now, out.FlagshipMatters)
+		a.Reason = reason(a.Fit, out.FlagshipMatters)
+	}
+	sort.SliceStable(out.Accounts, func(i, j int) bool {
+		a, b := out.Accounts[i], out.Accounts[j]
+		if sa, sb := switchable(a.Result), switchable(b.Result); sa != sb {
+			return sa
+		} else if !sa {
+			return false
+		}
+		return betterThan(a.Fit, a.Band, b.Fit, b.Band)
+	})
+	return out
+}
+
+// statusNote is the few words the switcher shows beside an account: what it has left, or
+// when it comes back, or why it cannot be used at all.
+func statusNote(f Fitness, res *Result, now time.Time, flagshipMatters bool) string {
+	switch {
+	case res.Err != "":
+		return "unavailable"
+	case res.NeedsLogin || res.Record.Missing:
+		return "sign in again"
+	case res.Record.IsReadOnly():
+		return "read-only"
+	}
+	if f.Spent {
+		if at, ok := weeklyReset(res, now); ok {
+			return "back in " + FormatRelative(at.Sub(now))
+		}
+		return "spent"
+	}
+	if !f.SessionFree() {
+		return "5h limit hit"
+	}
+	out := fmt.Sprintf("%.0f%% left", 100-f.Weekly)
+	if flagshipMatters {
+		name := firstNonEmpty(f.FlagshipName, "Fable")
+		switch {
+		case f.Flagship < 0:
+			out += " \u00b7 no " + name
+		case f.Flagship >= 100:
+			out += " \u00b7 " + name + " spent"
+		}
+	}
+	return out
+}
+
 // Pick is the account to work in next, and why.
 type Pick struct {
 	Result   *Result
@@ -143,50 +235,26 @@ type Pick struct {
 	AllSpent bool // every account's weekly window is gone; this one simply comes back first
 }
 
-// Recommend chooses the account to work in next out of one provider's accounts, across
-// every address: the one whose 5h window is free, whose flagship model is still there,
-// and which has the most weekly capacity left.
+// Recommend chooses the account to work in next out of one provider's accounts.
 //
 // When every account is out of weekly room it names the one that frees up first instead,
 // with AllSpent set, so callers can say so rather than recommend a dead account.
 func Recommend(results []*Result, now time.Time) *Pick {
-	type scored struct {
-		res *Result
-		fit Fitness
-	}
-	var in []scored
-	flagshipMatters := false
-	for _, r := range results {
-		if !switchable(r) {
-			continue
-		}
-		fit := FitnessOf(TierLabel(r.Record), NormalizeWindows(r.Usage, now))
-		if fit.Flagship >= 0 {
-			flagshipMatters = true
-		}
-		in = append(in, scored{r, fit})
-	}
-	if len(in) == 0 {
+	ranking := Rank(results, now)
+	best := ranking.Best()
+	if best == nil {
 		return nil
 	}
-	best := in[0]
-	bestBand := band(best.fit, flagshipMatters)
-	for _, c := range in[1:] {
-		b := band(c.fit, flagshipMatters)
-		if betterThan(c.fit, b, best.fit, bestBand) {
-			best, bestBand = c, b
-		}
-	}
-	pick := &Pick{Result: best.res, Fit: best.fit, Band: bestBand}
-	if best.fit.Spent {
+	pick := &Pick{Result: best.Result, Fit: best.Fit, Band: best.Band, Reason: best.Reason}
+	if best.Fit.Spent {
 		pick.AllSpent = true
 		if soonest := firstToReset(results, now); soonest != nil {
 			pick.Result = soonest
 			pick.Fit = FitnessOf(TierLabel(soonest.Record), NormalizeWindows(soonest.Usage, now))
-			pick.Band = band(pick.Fit, flagshipMatters)
+			pick.Band = band(pick.Fit, ranking.FlagshipMatters)
+			pick.Reason = reason(pick.Fit, ranking.FlagshipMatters)
 		}
 	}
-	pick.Reason = reason(pick.Fit, flagshipMatters)
 	return pick
 }
 
@@ -211,30 +279,31 @@ func betterThan(a Fitness, aBand int, b Fitness, bBand int) bool {
 	return a.Session < b.Session
 }
 
+// weeklyReset is when an account's general weekly window comes back.
+func weeklyReset(res *Result, now time.Time) (time.Time, bool) {
+	for _, w := range NormalizeWindows(res.Usage, now) {
+		if w.Group != "weekly" || isScopedWeekly(w) {
+			continue
+		}
+		if at, ok := w.ResetTime(); ok && at.After(now) {
+			return at, true
+		}
+		break
+	}
+	return time.Time{}, false
+}
+
 // firstToReset names the account whose general weekly window comes back soonest.
 func firstToReset(results []*Result, now time.Time) *Result {
-	type candidate struct {
-		res *Result
-		at  time.Time
-	}
-	var cands []candidate
+	var best *Result
+	var bestAt time.Time
 	for _, r := range results {
 		if !switchable(r) {
 			continue
 		}
-		for _, w := range NormalizeWindows(r.Usage, now) {
-			if w.Group != "weekly" || isScopedWeekly(w) {
-				continue
-			}
-			if at, ok := w.ResetTime(); ok && at.After(now) {
-				cands = append(cands, candidate{r, at})
-			}
-			break
+		if at, ok := weeklyReset(r, now); ok && (best == nil || at.Before(bestAt)) {
+			best, bestAt = r, at
 		}
 	}
-	if len(cands) == 0 {
-		return nil
-	}
-	sort.Slice(cands, func(i, j int) bool { return cands[i].at.Before(cands[j].at) })
-	return cands[0].res
+	return best
 }

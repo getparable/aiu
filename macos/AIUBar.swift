@@ -46,6 +46,13 @@ struct Account: Decodable, Identifiable, Hashable {
     let stale: String?
     let fetchedAt: Date?
     let error: String?
+    /// The account's place in aiu's ranking for its provider, 0 best, and the few words
+    /// the switcher shows beside it ("43% left", "back in 4d 16h").
+    let rank: Int?
+    let note: String?
+    /// The general weekly window is gone: there is nothing to spend on this account until
+    /// it resets, whatever its other numbers say.
+    let spent: Bool?
     /// The one account per provider aiu says to work in next, and the line explaining why.
     /// `allSpent` turns that into a countdown: nothing has weekly room left, and this is
     /// merely the account that comes back first.
@@ -239,6 +246,11 @@ final class Store {
     /// there, most weekly capacity for the plan — so the app and the CLI never disagree.
     func recommended(_ provider: Provider) -> Account? {
         group(provider).first { $0.recommended == true }
+    }
+
+    /// Every account for a provider in that same ranking, best first: what the switcher lists.
+    func ranked(_ provider: Provider) -> [Account] {
+        group(provider).sorted { ($0.rank ?? .max) < ($1.rank ?? .max) }
     }
 
     /// Cheap to call often: aiu answers from its cache until an account's 5-minute spacing has passed.
@@ -696,29 +708,18 @@ struct SummaryCard: View {
 
     @ViewBuilder
     private func row(_ provider: Provider) -> some View {
-        let accounts = store.group(provider)
-        let active = accounts.first(where: \.active)
+        let active = store.group(provider).first(where: \.active)
         let best = store.recommended(provider)
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .top, spacing: 10) {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 10) {
                 LogoView(provider: provider, size: 13)
-                    .padding(.top, 2)
-                VStack(alignment: .leading, spacing: 3) {
-                    if let active {
-                        HStack(spacing: 6) {
-                            Text(active.label)
-                                .font(.system(.body, weight: .semibold))
-                                .lineLimit(1)
-                            TimelineView(.everyMinute) { context in
-                                Text(limitText(active, now: context.date))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    } else {
-                        Text("not signed in to \(provider.client)")
+                switcher(provider, active: active)
+                if let active {
+                    TimelineView(.everyMinute) { context in
+                        Text(limitText(active, now: context.date))
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 }
                 Spacer(minLength: 4)
@@ -729,42 +730,98 @@ struct SummaryCard: View {
                         .foregroundStyle(account.tightest >= 80 ? .primary : .secondary)
                 }
             }
-            if let best, best.id != active?.id {
-                recommendation(best)
+            if let best {
+                hint(best, active: active)
             }
         }
     }
 
-    /// The account aiu says to work in next, with the switch one click away — the whole
-    /// point of naming it. An account that is only "back first" has nothing to switch to.
-    @ViewBuilder
-    private func recommendation(_ best: Account) -> some View {
-        let spent = best.allSpent == true
-        HStack(spacing: 6) {
-            Image(systemName: spent ? "clock" : "arrow.right.circle")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(spent ? "all spent · \(best.label) back first" : "use next: \(best.label)")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                if let why = best.why, !why.isEmpty {
-                    Text(why)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
+    /// The account name doubles as the switcher: every account for this provider in aiu's
+    /// order, so any of them is two clicks away without the card growing to hold them.
+    private func switcher(_ provider: Provider, active: Account?) -> some View {
+        Menu {
+            Section("Switch \(provider.client) to") {
+                ForEach(store.ranked(provider)) { account in
+                    Button {
+                        Task { await store.switchTo(account) }
+                    } label: {
+                        Label(menuTitle(account), systemImage: menuSymbol(account))
+                    }
+                    .disabled(account.active || !account.canSwitch)
                 }
             }
-            Spacer(minLength: 4)
-            if !spent && best.canSwitch {
-                Button("Switch") {
-                    Task { await store.switchTo(best) }
+        } label: {
+            Text(active?.label ?? "choose account")
+                .font(.system(.body, weight: .semibold))
+                .lineLimit(1)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.glass)
+        .fixedSize()
+        .help("Switch \(provider.client) to another account")
+    }
+
+    /// One menu row: the label, then what the ranking saw. The account in use says so
+    /// instead of its numbers, since those are already the row above.
+    private func menuTitle(_ account: Account) -> String {
+        var detail: [String] = []
+        if let tier = account.tier, !tier.isEmpty { detail.append(tier) }
+        if account.active {
+            detail.append("in use")
+        } else if let note = account.note, !note.isEmpty {
+            detail.append(note)
+        }
+        return detail.isEmpty ? account.label : "\(account.label)  ·  \(detail.joined(separator: " · "))"
+    }
+
+    private func menuSymbol(_ account: Account) -> String {
+        if account.active { return "checkmark" }
+        if account.recommended == true { return "star.fill" }
+        if account.needsLogin || !account.canSwitch { return "exclamationmark.triangle" }
+        if account.spent == true { return "clock" }
+        return "circle"
+    }
+
+    /// The pick, always on show: what aiu would move to and why, with the switch one click
+    /// away. Already on it, or nothing left to move to, and the line simply says so.
+    @ViewBuilder
+    private func hint(_ best: Account, active: Account?) -> some View {
+        let spent = best.allSpent == true
+        let onBest = !spent && best.id == active?.id
+        HStack(spacing: 7) {
+            Image(systemName: spent ? "clock" : (onBest ? "checkmark" : "star.fill"))
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .frame(width: 13)
+            if onBest {
+                Text(best.why.map { "best available · \($0)" } ?? "best available")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(spent ? "all spent · \(best.label) back first" : "use next: \(best.label)")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    if let why = best.why, !why.isEmpty {
+                        Text(why)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
                 }
-                .buttonStyle(.glass)
-                .controlSize(.small)
-                .font(.caption.weight(.semibold))
-                .help("Point \(best.kind.client) at \(best.label) (\(best.email))")
+                Spacer(minLength: 4)
+                if !spent && best.canSwitch {
+                    Button("Switch") {
+                        Task { await store.switchTo(best) }
+                    }
+                    .buttonStyle(.glass)
+                    .controlSize(.small)
+                    .font(.caption.weight(.semibold))
+                    .help("Point \(best.kind.client) at \(best.label) (\(best.email))")
+                }
             }
         }
         .padding(.leading, 23)
@@ -775,7 +832,7 @@ struct SummaryCard: View {
         let windows = account.windows.filter { $0.percent >= account.tightest - 0.01 }
         guard let limiting = windows.first ?? account.windows.first else { return "" }
         guard let resets = limiting.resetsAt else { return limiting.shortLabel }
-        return "\(limiting.shortLabel) resets in \(compactInterval(until: resets, from: now))"
+        return "\(limiting.shortLabel) in \(compactInterval(until: resets, from: now))"
     }
 }
 

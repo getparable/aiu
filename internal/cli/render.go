@@ -153,8 +153,11 @@ func summarize(p painter, group []*core.Result, named bool, now time.Time) []str
 	var lines []string
 	if pick := core.Recommend(ok, now); pick != nil {
 		lead := "use next"
-		if pick.AllSpent {
+		switch {
+		case pick.AllSpent:
 			lead = "all spent — back first"
+		case pick.Result.Active:
+			lead = "best available"
 		}
 		lines = append(lines, fmt.Sprintf("%s %s%s: %s %s", p.cyan("\u2192"), who, lead,
 			p.bold(pick.Result.Record.Label), p.dim("("+pick.Reason+")")))
@@ -248,9 +251,14 @@ type jsonAccount struct {
 	Stale            string           `json:"stale,omitempty"`
 	FetchedAt        string           `json:"fetchedAt,omitempty"`
 	Error            string           `json:"error,omitempty"`
-	// Recommended marks the one account per provider worth switching to next, and Why
-	// says what earned it. AllSpent turns the recommendation into a countdown: nothing
-	// has weekly room left, and this is merely the account that comes back first.
+	// Rank is the account's place in its provider's ranking, 0 best, and Note the few
+	// words a switcher shows beside it ("43% left", "back in 4d 16h"). Recommended marks
+	// the one account per provider worth switching to next, and Why says what earned it.
+	// AllSpent turns the recommendation into a countdown: nothing has weekly room left,
+	// and this is merely the account that comes back first.
+	Rank        int    `json:"rank"`
+	Note        string `json:"note,omitempty"`
+	Spent       bool   `json:"spent,omitempty"`
 	Recommended bool   `json:"recommended,omitempty"`
 	Why         string `json:"why,omitempty"`
 	AllSpent    bool   `json:"allSpent,omitempty"`
@@ -263,13 +271,25 @@ func toJSON(snap *core.Snapshot, now time.Time) []jsonAccount {
 		}
 		return time.UnixMilli(ms).UTC().Format(time.RFC3339)
 	}
+	type placing struct {
+		rank  int
+		note  string
+		spent bool
+	}
 	picks := map[core.Provider]*core.Pick{}
+	placings := map[*core.Result]placing{}
 	for _, p := range core.Providers {
 		var group []*core.Result
 		for _, res := range snap.Results {
 			if res.Record.Provider == p {
 				group = append(group, res)
 			}
+		}
+		if len(group) == 0 {
+			continue
+		}
+		for i, a := range core.Rank(group, now).Accounts {
+			placings[a.Result] = placing{i, a.Note, a.Fit.Spent}
 		}
 		if pick := core.Recommend(group, now); pick != nil {
 			picks[p] = pick
@@ -293,8 +313,9 @@ func toJSON(snap *core.Snapshot, now time.Time) []jsonAccount {
 			Login: core.HealthOf(res, now), ReadOnly: r.IsReadOnly(), CanSwitch: !r.IsReadOnly() && !r.Missing,
 			Windows: windows, Usage: usage, Stale: res.Stale, FetchedAt: iso(res.FetchedAt), Error: res.Err,
 		})
+		last := &out[len(out)-1]
+		last.Rank, last.Note, last.Spent = placings[res].rank, placings[res].note, placings[res].spent
 		if pick := picks[r.Provider]; pick != nil && pick.Result == res {
-			last := &out[len(out)-1]
 			last.Recommended, last.Why, last.AllSpent = true, pick.Reason, pick.AllSpent
 		}
 	}
