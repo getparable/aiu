@@ -35,5 +35,5 @@ jobs:
           cache: true
       - run: go test -race ./...
       - run: make app BIN_ARCH=universal
-      - run: lipo -verify_arch arm64 x86_64 build/AIU.app/Contents/MacOS/aiu
-      - run: lipo -verify_arch arm64 x86_64 build/AIU.app/Contents/MacOS/AIUBar
+      - run: lipo build/AIU.app/Contents/MacOS/aiu -verify_arch arm64 && lipo build/AIU.app/Contents/MacOS/aiu -verify_arch x86_64
+      - run: lipo build/AIU.app/Contents/MacOS/AIUBar -verify_arch arm64 && lipo build/AIU.app/Contents/MacOS/AIUBar -verify_arch x86_64
