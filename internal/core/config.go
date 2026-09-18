@@ -125,6 +125,7 @@ type Config struct {
 	CodexUsageURL             string
 	CodexTokenURL             string
 	CodexAuthorizeURL         string
+	ReleaseAPIURL             string
 
 	HTTP *http.Client
 	Now  func() time.Time
@@ -151,6 +152,7 @@ func DefaultConfig() *Config {
 		CodexUsageURL:             "https://chatgpt.com/backend-api/wham/usage",
 		CodexTokenURL:             "https://auth.openai.com/oauth/token",
 		CodexAuthorizeURL:         "https://auth.openai.com/oauth/authorize",
+		ReleaseAPIURL:             releaseAPI,
 
 		HTTP: &http.Client{Timeout: 20 * time.Second},
 		Now:  time.Now,

@@ -32,6 +32,7 @@ type options struct {
 	console  bool
 	noOpen   bool
 	noColor  bool
+	force    bool
 	help     bool
 	version  bool
 }
@@ -97,6 +98,8 @@ func parse(argv []string) (*options, error) {
 			o.noOpen = true
 		case "no-color":
 			o.noColor = true
+		case "force":
+			o.force = true
 		case "help":
 			o.help = true
 		case "version":
@@ -144,6 +147,7 @@ func Run(argv []string) int {
 		"list": a.list, "ls": a.list, "remove": a.remove, "rm": a.remove,
 		"sync": a.sync, "switch": a.switchTo, "use": a.switchTo, "whoami": a.whoami,
 		"link":    a.link,
+		"update":  a.update,
 		"menubar": a.menuBar,
 		"help":    func(context.Context) error { a.help(); return nil },
 	}
@@ -521,6 +525,7 @@ func (a *app) help() {
   aiu switch <email|label>                            point Claude Code (or Codex) at a tracked account
   aiu list | remove <email|label> | sync | whoami
   aiu link [install|remove|status]                    add or drop the ~/.local/bin/aiu shortcut
+  aiu update [--force]                                is there a newer release? (never installs)
   aiu menubar                                         open the menu bar app (AIU.app)
 
 %s
