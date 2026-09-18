@@ -130,7 +130,58 @@ macos/icon         the app icon source (make icon)
 
 ## Releasing
 
-Distributing to other Macs needs a **Developer ID Application** certificate and notarization.
+Releases ship through Homebrew, across two repositories: this one, and the tap at
+[getparable/homebrew-tap](https://github.com/getparable/homebrew-tap). The order matters
+— the bottle has to exist before the formula points at it.
+
+> **Forgetting the bottle does not fail.** Homebrew falls back to building from source,
+> so the install still succeeds — it just takes minutes and needs Xcode 27, which is the
+> prerequisite the bottle exists to remove. Nothing warns you. The only symptom is
+> `==> Installing getparable/tap/aiu` where you expected `==> Pouring`, so **step 5 is
+> the step that catches it.**
+
+1. **Bump and tag.** `VERSION` in the Makefile must match the tag, or a `make install`
+   build reports a version that is already out. Bump it in a PR first, then:
+   ```sh
+   git tag -a v0.1.4 -m "aiu 0.1.4" && git push origin v0.1.4
+   gh release create v0.1.4 --title "aiu 0.1.4" --latest --notes "…"
+   ```
+2. **Build the bottle.** `--build-bottle` is an `install` flag, not a `reinstall` one, so
+   the uninstall is required:
+   ```sh
+   brew uninstall --force getparable/tap/aiu
+   brew install --build-bottle getparable/tap/aiu
+   brew bottle --json --no-rebuild \
+     --root-url="https://github.com/getparable/aiu/releases/download/v0.1.4" \
+     getparable/tap/aiu
+   ```
+   Keep the `bottle do` block it prints — step 4 needs it.
+3. **Upload it under the name Homebrew fetches.** The local file has *two* dashes and the
+   URL has *one*; the `.json` manifest spells out both as `local_filename` and `filename`.
+   Upload the wrong one and every install quietly compiles instead.
+   ```sh
+   cp aiu--0.1.4.arm64_tahoe.bottle.tar.gz aiu-0.1.4.arm64_tahoe.bottle.tar.gz
+   gh release upload v0.1.4 aiu-0.1.4.arm64_tahoe.bottle.tar.gz
+   ```
+4. **Point the formula at it** (in the tap repo): the new `url`, the sha256 **of the
+   source tarball** — not the bottle's, they are different numbers — and the `bottle do`
+   block from step 2, whose `root_url` carries the new version.
+5. **Verify it pours**, which is the only thing that proves steps 3 and 4 agree:
+   ```sh
+   brew update && brew uninstall --force aiu && brew install getparable/tap/aiu
+   ```
+   Expect `==> Pouring aiu-0.1.4.arm64_tahoe.bottle.tar.gz` and a couple of seconds. If it
+   compiles instead, the bottle name or the `root_url` is wrong.
+
+The bottle is built on the maintainer's machine, so it is tagged for that platform —
+currently `arm64_tahoe`. An Intel Mac has no bottle and builds from source, which is why
+the Xcode dependency stays on the formula.
+
+### Signed direct downloads
+
+Not set up, and not needed for the Homebrew path above — Homebrew's own downloads carry
+no quarantine flag, so an ad-hoc signature is enough. Handing someone a `.zip` or `.dmg`
+directly is what needs a **Developer ID Application** certificate and notarization:
 
 1. **Certificate** (once): Xcode → Settings → Accounts → your team → Manage Certificates → **+** → *Developer ID Application*. Only the team's Account Holder can create one; on a team account, ask them.
 2. **Notary credentials** (once): create an app-specific password at [account.apple.com](https://account.apple.com) → Sign-In and Security, then
@@ -139,9 +190,9 @@ Distributing to other Macs needs a **Developer ID Application** certificate and 
    ```
 3. **Release**: set the bundle id to a domain you own, then
    ```sh
-   make release VERSION=0.1.3 BUNDLE_ID=com.example.aiu
+   make release VERSION=0.1.4 BUNDLE_ID=com.example.aiu
    ```
-   This runs the tests, builds a universal app, signs both binaries with the hardened runtime, notarizes, staples, and writes `dist/AIU-0.1.3.zip`.
+   This runs the tests, builds a universal app, signs both binaries with the hardened runtime, notarizes, staples, and writes `dist/AIU-0.1.4.zip`. It refuses to start without both of the above.
 
 ## Trademarks
 
