@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -113,5 +114,92 @@ func TestPlanWeight(t *testing.T) {
 		if got := PlanWeight(tier); got != want {
 			t.Errorf("PlanWeight(%q) = %v, want %v", tier, got, want)
 		}
+	}
+}
+
+// labelsOf is the ranking's order, which is what the switcher lists.
+func labelsOf(r Ranking) []string {
+	out := make([]string, 0, len(r.Accounts))
+	for _, a := range r.Accounts {
+		out = append(out, a.Result.Record.Label)
+	}
+	return out
+}
+
+func noteFor(t *testing.T, r Ranking, label string) string {
+	t.Helper()
+	for _, a := range r.Accounts {
+		if a.Result.Record.Label == label {
+			return a.Note
+		}
+	}
+	t.Fatalf("no account labelled %q in %v", label, labelsOf(r))
+	return ""
+}
+
+func TestRankNotes(t *testing.T) {
+	now := time.Now()
+	roomy := account("roomy", "default_claude_max_5x", limitsUsage(20, 57, 57, 3*24*time.Hour, now))
+	noFable := account("no-fable", "", limitsUsage(7, 2, -1, 6*24*time.Hour, now))
+	fableGone := account("fable-gone", "default_claude_max_20x", limitsUsage(0, 40, 100, 2*24*time.Hour, now))
+	spent := account("spent", "default_claude_max_20x", limitsUsage(0, 100, 100, 4*24*time.Hour+6*time.Hour, now))
+	blocked := account("blocked", "default_claude_max_20x", limitsUsage(100, 30, 30, 3*24*time.Hour, now))
+
+	ranking := Rank([]*Result{roomy, noFable, fableGone, spent, blocked}, now)
+	for _, tc := range []struct{ label, want string }{
+		{"roomy", "43% left"},
+		{"no-fable", "98% left · no Fable"},
+		{"fable-gone", "60% left · Fable spent"},
+		{"spent", "back in 4d 6h"},
+		{"blocked", "5h limit hit"},
+	} {
+		if got := noteFor(t, ranking, tc.label); got != tc.want {
+			t.Errorf("note for %s = %q, want %q", tc.label, got, tc.want)
+		}
+	}
+}
+
+func TestRankNotesForAccountsThatCannotBeUsed(t *testing.T) {
+	now := time.Now()
+	broken := account("broken", "default_claude_max_20x", nil)
+	broken.Err = "429 from the usage endpoint"
+	expired := account("expired", "default_claude_max_20x", limitsUsage(0, 10, 10, 3*24*time.Hour, now))
+	expired.NeedsLogin = true
+	readOnly := account("read-only", "default_claude_max_20x", limitsUsage(0, 10, 10, 3*24*time.Hour, now))
+	readOnly.Record.Scopes = []string{"user:profile"}
+	usable := account("usable", "default_claude_max_5x", limitsUsage(0, 60, 60, 3*24*time.Hour, now))
+
+	ranking := Rank([]*Result{broken, expired, readOnly, usable}, now)
+	for _, tc := range []struct{ label, want string }{
+		{"broken", "unavailable"},
+		{"expired", "sign in again"},
+		{"read-only", "read-only"},
+	} {
+		if got := noteFor(t, ranking, tc.label); got != tc.want {
+			t.Errorf("note for %s = %q, want %q", tc.label, got, tc.want)
+		}
+	}
+	// The three that cannot be switched to sort last however good their numbers are, and
+	// keep the order they came in so the list does not reshuffle between refreshes.
+	if got := labelsOf(ranking); !reflect.DeepEqual(got, []string{"usable", "broken", "expired", "read-only"}) {
+		t.Errorf("order = %v", got)
+	}
+	if best := ranking.Best(); best == nil || best.Result != usable {
+		t.Errorf("Best must skip the three that cannot be used, got %+v", best)
+	}
+}
+
+func TestRankOrdersEveryAccount(t *testing.T) {
+	now := time.Now()
+	// Deliberately shuffled: band beats capacity, capacity beats percentage.
+	spent := account("spent", "default_claude_max_20x", limitsUsage(0, 100, 100, 48*time.Hour, now))
+	blocked := account("blocked", "default_claude_max_20x", limitsUsage(100, 5, 5, 72*time.Hour, now))
+	proFresh := account("pro-fresh", "", limitsUsage(0, 2, 2, 72*time.Hour, now))
+	maxHalf := account("max-half", "default_claude_max_20x", limitsUsage(0, 50, 50, 72*time.Hour, now))
+
+	ranking := Rank([]*Result{spent, blocked, proFresh, maxHalf}, now)
+	want := []string{"max-half", "pro-fresh", "blocked", "spent"}
+	if got := labelsOf(ranking); !reflect.DeepEqual(got, want) {
+		t.Errorf("order = %v, want %v", got, want)
 	}
 }
