@@ -19,7 +19,7 @@ NOTARY_PROFILE ?= aiu
 DIST            = dist
 ZIP             = $(DIST)/AIU-$(VERSION).zip
 
-.PHONY: build test icon app install uninstall release clean
+.PHONY: build test icon app install uninstall tag release clean
 
 build:
 	CGO_ENABLED=1 go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/aiu
@@ -81,6 +81,23 @@ install: app
 uninstall:
 	-pkill -f "$(APP_DEST)/AIU.app/Contents/MacOS/" 2>/dev/null
 	rm -rf $(APP_DEST)/AIU.app $(CLI_DEST)/aiu
+
+# The release tag is derived from VERSION rather than typed, so the two cannot disagree
+# — twice a release has shipped with the Makefile saying one version and the tag another,
+# and nothing complained: the binary just reported the wrong version and `aiu update`
+# either nagged about an upgrade that was already installed or never noticed the release.
+# The checks cover the other ways a tag has gone wrong: local changes, a commit that is
+# not on origin/main, or a VERSION that already shipped.
+tag:
+	@test "$(origin VERSION)" = file || { echo "error: VERSION must come from the Makefile, not the command line or environment (here: $(origin VERSION)) — the whole point is that the tag cannot be typed"; exit 1; }
+	@test -z "$$(git status --porcelain)" || { echo "error: the working tree has uncommitted changes"; exit 1; }
+	@test "$$(git rev-parse --abbrev-ref HEAD)" = main || { echo "error: releases are tagged from main, not $$(git rev-parse --abbrev-ref HEAD)"; exit 1; }
+	@git fetch -q --tags origin main
+	@test "$$(git rev-parse HEAD)" = "$$(git rev-parse origin/main)" || { echo "error: HEAD is not origin/main — merge the version bump and pull first"; exit 1; }
+	@! git rev-parse -q --verify "refs/tags/v$(VERSION)" >/dev/null || { echo "error: v$(VERSION) is already tagged — bump VERSION in the Makefile (in a PR) first"; exit 1; }
+	git tag -a "v$(VERSION)" -m "aiu $(VERSION)"
+	git push origin "v$(VERSION)"
+	@echo "✔ v$(VERSION) tagged and pushed — next: gh release create v$(VERSION) --title \"aiu $(VERSION)\" --latest --notes \"…\" (README → Releasing)"
 
 # Universal build, Developer ID signature with hardened runtime and secure timestamp
 # (inner binary first, then the bundle), notarization, stapling, and a zip to share.
