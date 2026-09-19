@@ -1,26 +1,38 @@
 name: Release tag
-
-# A tag that disagrees with VERSION in the Makefile ships a binary that reports the wrong
-# version, and `aiu update` then either nags about an upgrade that is already installed
-# or never notices the release. `make tag` derives the tag from VERSION so it cannot
-# happen there; this catches a tag made by hand.
 on:
   push:
     tags: ["v*"]
-
 permissions:
   contents: read
-
 jobs:
-  version:
-    name: Tag matches VERSION
-    runs-on: ubuntu-latest
+  version-and-build:
+    name: Validate tag and build artifacts (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix: { os: [ubuntu-latest, windows-latest, macos-latest] }
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: |
-          version="$(sed -n 's/^VERSION[[:space:]]*?=[[:space:]]*//p' Makefile)"
-          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "::error::tag is $GITHUB_REF_NAME but the Makefile says VERSION=$version — delete the tag, fix whichever is wrong, and tag again with \`make tag\`"
-            exit 1
-          fi
-          echo "$GITHUB_REF_NAME matches VERSION=$version"
+      - uses: actions/checkout@v4
+      - name: Validate Cargo version
+        shell: bash
+        run: |
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+          test "$GITHUB_REF_NAME" = "v$version" || { echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $version"; exit 1; }
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes libxkbcommon-dev libwayland-dev libegl1-mesa-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with: { toolchain: 1.88.0 }
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - name: Package Unix binary
+        if: runner.os != 'Windows'
+        run: cp target/release/aiu "aiu-${{ runner.os }}"
+      - name: Package Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Copy-Item target/release/aiu.exe "aiu-Windows.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aiu-${{ runner.os }}-${{ github.ref_name }}
+          path: aiu-*

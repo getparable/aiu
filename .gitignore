@@ -2,3 +2,8 @@
 /build/
 /dist/
 /.local/
+/target/
+/.obsidian/
+/upstream-aiu/
+/aiu-rs.md
+*.pdb

@@ -1,7 +1,7 @@
 # Security policy
 
-Please report suspected vulnerabilities privately through [GitHub's private vulnerability reporting form](https://github.com/getparable/aiu/security/advisories/new). Include the affected version, reproduction steps, and potential impact. Do not put credentials or personal account data in the report.
+Report suspected vulnerabilities privately to the maintainer of [krflol/aiu-rs](https://github.com/krflol/aiu-rs). Include the affected version, reproduction steps, and potential impact. Do not put credentials or personal account data in a public report.
 
-Please do not open a public issue or pull request for an unpatched vulnerability. The maintainers will acknowledge the report through the advisory and coordinate a fix and disclosure there.
+AIU is an unofficial client of provider endpoints. It stores token copies locally: Windows uses DPAPI for the current Windows user, macOS uses the `aiu-rs` Keychain item, and Linux uses an owner-only file under the XDG configuration directory. `AIU_STORE=file` explicitly selects the owner-only file store on any platform. Keep that file and your OS account protected.
 
-AIU stores token copies in the macOS Keychain by default. `AIU_STORE=file` uses an owner-only file at `~/.config/aiu/tokens.json`. When AIU first creates a Claude Code Keychain item, macOS may ask Claude Code to authorize access to that item. An existing item keeps its access settings when AIU updates it.
+Tests use synthetic data and do not contain real accounts, tokens, or provider credentials. Do not open a public issue or pull request for an unpatched vulnerability; use private reporting so maintainers can coordinate a fix and disclosure.
