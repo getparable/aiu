@@ -89,6 +89,7 @@ uninstall:
 # The checks cover the other ways a tag has gone wrong: local changes, a commit that is
 # not on origin/main, or a VERSION that already shipped.
 tag:
+	@test "$(origin VERSION)" = file || { echo "error: VERSION must come from the Makefile, not the command line or environment (here: $(origin VERSION)) — the whole point is that the tag cannot be typed"; exit 1; }
 	@test -z "$$(git status --porcelain)" || { echo "error: the working tree has uncommitted changes"; exit 1; }
 	@test "$$(git rev-parse --abbrev-ref HEAD)" = main || { echo "error: releases are tagged from main, not $$(git rev-parse --abbrev-ref HEAD)"; exit 1; }
 	@git fetch -q --tags origin main
