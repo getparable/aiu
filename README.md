@@ -140,12 +140,17 @@ Releases ship through Homebrew, across two repositories: this one, and the tap a
 > `==> Installing getparable/tap/aiu` where you expected `==> Pouring`, so **step 5 is
 > the step that catches it.**
 
-1. **Bump and tag.** `VERSION` in the Makefile must match the tag, or a `make install`
-   build reports a version that is already out. Bump it in a PR first, then:
+1. **Bump, merge, tag.** Bump `VERSION` in the Makefile in a PR and merge it. Then, on
+   `main` with nothing uncommitted:
    ```sh
-   git tag -a v0.1.4 -m "aiu 0.1.4" && git push origin v0.1.4
+   make tag
    gh release create v0.1.4 --title "aiu 0.1.4" --latest --notes "…"
    ```
+   `make tag` derives the tag from `VERSION`, so the two cannot disagree — which they have,
+   twice: the binary then reports the wrong version and `aiu update` either nags about an
+   upgrade that is already installed or never notices the release. It refuses to tag from a
+   dirty tree, from anything but `origin/main`, or with a `VERSION` that already shipped.
+   CI checks the same thing on every pushed tag, in case one is made by hand.
 2. **Build the bottle.** `--build-bottle` is an `install` flag, not a `reinstall` one, so
    the uninstall is required:
    ```sh
