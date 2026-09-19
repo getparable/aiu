@@ -929,7 +929,7 @@ mod tests {
     #[test]
     fn cancellation_releases_listener_with_incomplete_request() {
         let (port, receiver, cancel) = bind_callback(0, "/callback", "expected".into()).unwrap();
-        let _stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         std::thread::sleep(Duration::from_millis(100));
         cancel.store(true, Ordering::Release);
         assert!(
@@ -938,7 +938,20 @@ mod tests {
                 .unwrap()
                 .is_err()
         );
-        std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+        // Receiving the cancellation result can precede the listener thread's teardown.
+        drop(stream);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", port)) {
+                drop(listener);
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "callback listener was not released"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
     }
 
     #[test]
