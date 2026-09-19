@@ -1,0 +1,35 @@
+[
+  {
+    "key": "claude:demo-claude@example.com",
+    "provider": "claude",
+    "email": "demo-claude@example.com",
+    "label": "Claude demo",
+    "tier": "Max 5x",
+    "active": true,
+    "readOnly": false,
+    "windows": [
+      {"key":"five_hour","group":"session","label":"5h session","percent":24,"known":true,"resetsAt":"2026-09-19T15:00:00Z","severity":"ok"},
+      {"key":"weekly_all","group":"weekly","label":"7d all","percent":41,"known":true,"resetsAt":"2026-09-23T00:00:00Z","severity":"ok"},
+      {"key":"weekly_scoped:Fable","group":"weekly","label":"7d Fable","percent":35,"known":true,"resetsAt":"2026-09-23T00:00:00Z","severity":"ok"}
+    ],
+    "fetchedAt": 1789826400000,
+    "login": {"state":"ok","message":"login valid"},
+    "recommended": true,
+    "why": "59% of the week left · Max 5x"
+  },
+  {
+    "key": "codex:demo-codex@example.com",
+    "provider": "codex",
+    "email": "demo-codex@example.com",
+    "label": "Codex demo",
+    "tier": "ChatGPT Pro",
+    "active": false,
+    "readOnly": false,
+    "windows": [
+      {"key":"primary","group":"session","label":"5h session","percent":12,"known":true,"resetsAt":"2026-09-19T15:00:00Z","severity":"ok"},
+      {"key":"secondary","group":"weekly","label":"7d all","percent":18,"known":true,"resetsAt":"2026-09-23T00:00:00Z","severity":"ok"}
+    ],
+    "fetchedAt": 1789826400000,
+    "login": {"state":"ok","message":"login active"}
+  }
+]

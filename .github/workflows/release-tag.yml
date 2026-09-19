@@ -1,26 +1,80 @@
-name: Release tag
-
-# A tag that disagrees with VERSION in the Makefile ships a binary that reports the wrong
-# version, and `aiu update` then either nags about an upgrade that is already installed
-# or never notices the release. `make tag` derives the tag from VERSION so it cannot
-# happen there; this catches a tag made by hand.
+name: Release
 on:
   push:
     tags: ["v*"]
-
+  workflow_dispatch:
 permissions:
   contents: read
-
 jobs:
-  version:
-    name: Tag matches VERSION
-    runs-on: ubuntu-latest
+  build:
+    name: Test and package (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: |
-          version="$(sed -n 's/^VERSION[[:space:]]*?=[[:space:]]*//p' Makefile)"
-          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "::error::tag is $GITHUB_REF_NAME but the Makefile says VERSION=$version — delete the tag, fix whichever is wrong, and tag again with \`make tag\`"
-            exit 1
-          fi
-          echo "$GITHUB_REF_NAME matches VERSION=$version"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Validate release tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REF: ${{ github.ref_type }}
+        run: python scripts/package-release.py --check-tag
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes libxkbcommon-dev libwayland-dev libegl1-mesa-dev libgtk-3-dev libayatana-appindicator3-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with: { key: '${{ matrix.target }}' }
+      - run: cargo test --locked --all-features
+      - run: cargo check --locked --no-default-features
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Check packaged executable
+        shell: bash
+        run: |
+          binary="target/${{ matrix.target }}/release/aiu"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then binary="$binary.exe"; fi
+          "$binary" --version
+          "$binary" --fixture fixtures/demo.json --json
+      - run: python scripts/package-release.py --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/aiu-*
+          if-no-files-found: error
+  draft:
+    name: Assemble verified release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum aiu-* > SHA256SUMS
+      - name: Create draft with all platform archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" dist/* --verify-tag --draft --title "AIU Rust $RELEASE_TAG" --notes-file "release-notes/$RELEASE_TAG.md"
