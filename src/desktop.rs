@@ -8,7 +8,11 @@ use anyhow::Result;
 use eframe::egui::{self, Color32, RichText};
 use std::{
     path::PathBuf,
-    sync::mpsc::{self, Receiver},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver},
+    },
     time::{Duration, Instant},
 };
 
@@ -31,11 +35,16 @@ pub fn run(config: Config, fixture: Option<PathBuf>) -> Result<()> {
                 fixture,
                 snapshot: initial.unwrap_or_default(),
                 pending: None,
+                login_cancel: None,
                 message: String::new(),
                 last_poll: Instant::now(),
                 provider: Provider::Claude,
                 label: String::new(),
                 filter: None,
+                tray: None,
+                tray_initialized: false,
+                tray_error: None,
+                quitting: false,
             };
             if panel.fixture.is_none() {
                 panel.start(Action::Refresh, cc.egui_ctx.clone());
@@ -60,21 +69,37 @@ struct Panel {
     fixture: Option<PathBuf>,
     snapshot: Snapshot,
     pending: Option<Receiver<Result<(Snapshot, String)>>>,
+    login_cancel: Option<Arc<AtomicBool>>,
     message: String,
     last_poll: Instant,
     provider: Provider,
     label: String,
     filter: Option<Provider>,
+    tray: Option<crate::tray::Tray>,
+    tray_initialized: bool,
+    tray_error: Option<String>,
+    quitting: bool,
 }
 
 impl Panel {
+    fn request_quit(&mut self) {
+        self.quitting = true;
+        if let Some(cancelled) = &self.login_cancel {
+            cancelled.store(true, Ordering::Release);
+        }
+        self.message = "Finishing the current update before quitting…".into();
+    }
+
     fn start(&mut self, action: Action, context: egui::Context) {
-        if self.pending.is_some() {
+        if self.pending.is_some() || self.quitting {
             return;
         }
         let config = self.config.clone();
         let fixture = self.fixture.clone();
+        let wake = self.tray.as_ref().map(|tray| tray.wake());
         let (tx, rx) = mpsc::channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.login_cancel = matches!(action, Action::Login(..)).then(|| cancelled.clone());
         self.message = match action {
             Action::Login(..) => "Complete sign-in in your browser. Waiting up to five minutes…",
             _ => "Updating…",
@@ -99,8 +124,16 @@ impl Panel {
                     }
                     Action::Login(provider, label) => {
                         let session = app.api.begin_login(provider, false, false, false)?;
+                        if cancelled.load(Ordering::Acquire) {
+                            anyhow::bail!("Sign-in cancelled");
+                        }
                         app.api.open_browser(&session.authorize_url)?;
-                        let code = session.wait_for_code()?;
+                        let code = session.wait_for_code_cancellable(&cancelled)?;
+                        if cancelled.load(Ordering::Acquire) {
+                            anyhow::bail!("Sign-in cancelled");
+                        }
+                        // Once an exchange has issued credentials, save them even
+                        // if Cancel or Quit arrives while the HTTP call is running.
                         let record = app.api.complete_login(&session, &code)?;
                         let saved = app.save_login(record, Some(&label))?;
                         message = format!("Signed in as {}", saved.email);
@@ -121,13 +154,52 @@ impl Panel {
                 Ok((snapshot, message))
             })();
             let _ = tx.send(result);
-            context.request_repaint();
+            if let Some(wake) = wake {
+                wake.request_repaint();
+            } else {
+                context.request_repaint();
+            }
         });
     }
 }
 
 impl eframe::App for Panel {
-    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if !self.tray_initialized {
+            self.tray_initialized = true;
+            match crate::tray::Tray::new(ctx.clone(), frame) {
+                Ok(tray) => self.tray = Some(tray),
+                Err(error) => {
+                    self.tray_error = Some(format!(
+                        "System tray unavailable: {}. Closing this window will quit AIU.",
+                        redact(&error.to_string())
+                    ));
+                }
+            }
+        }
+        let commands: Vec<_> = self.tray.iter().flat_map(|tray| tray.commands()).collect();
+        for command in commands {
+            match command {
+                crate::tray::Command::Show => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+                crate::tray::Command::Refresh => self.start(Action::Refresh, ctx.clone()),
+                crate::tray::Command::Quit => {
+                    self.request_quit();
+                }
+            }
+        }
+        if ctx.input(|input| input.viewport().close_requested()) {
+            if self.tray.is_some() && !self.quitting {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            } else if self.pending.is_some() {
+                self.request_quit();
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            }
+        }
         #[cfg(feature = "screenshot")]
         if self.fixture.is_some()
             && let Some(path) = std::env::var_os("AIU_SCREENSHOT_TO")
@@ -151,6 +223,7 @@ impl eframe::App for Panel {
                 {
                     eprintln!("screenshot failed: {error}");
                 }
+                self.quitting = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
             ctx.request_repaint_after(Duration::from_millis(20));
@@ -159,6 +232,7 @@ impl eframe::App for Panel {
             match rx.try_recv() {
                 Ok(result) => {
                     self.pending = None;
+                    self.login_cancel = None;
                     self.last_poll = Instant::now();
                     match result {
                         Ok((snapshot, message)) => {
@@ -170,11 +244,16 @@ impl eframe::App for Panel {
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.pending = None;
+                    self.login_cancel = None;
                     self.message = "Background task ended unexpectedly".into();
                     self.last_poll = Instant::now();
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
             }
+        }
+        if self.quitting && self.pending.is_none() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
         }
         if self.pending.is_none() && self.last_poll.elapsed() >= Duration::from_secs(60) {
             self.start(Action::Refresh, ctx.clone());
@@ -226,8 +305,20 @@ impl eframe::App for Panel {
                 if ui.add_enabled(can_edit, egui::Button::new("Sign in")).clicked() { action = Some(Action::Login(self.provider, self.label.clone())); }
             });
             if !self.message.is_empty() { ui.label(&self.message); }
+            if let Some(cancelled) = &self.login_cancel {
+                if ui.add_enabled(!cancelled.load(Ordering::Acquire), egui::Button::new("Cancel sign-in")).clicked() {
+                    cancelled.store(true, Ordering::Release);
+                    self.message = "Cancelling sign-in…".into();
+                }
+                ui.small("If you closed the browser tab, cancel here to stop waiting.");
+            }
             for warning in &self.snapshot.warnings { ui.colored_label(Color32::from_rgb(240, 184, 98), warning); }
             ui.small("Display refreshes every minute. Usage requests are shared and cached for five minutes.");
+            if let Some(error) = &self.tray_error {
+                ui.colored_label(Color32::from_rgb(240, 184, 98), error);
+            } else {
+                ui.small("Closing this window keeps AIU in the tray. Use the tray menu to quit.");
+            }
             ui.add_space(6.0);
         });
 
@@ -279,6 +370,14 @@ impl eframe::App for Panel {
         });
         if let Some(action) = action {
             self.start(action, ctx.clone());
+        }
+    }
+}
+
+impl Drop for Panel {
+    fn drop(&mut self) {
+        if let Some(cancelled) = &self.login_cancel {
+            cancelled.store(true, Ordering::Release);
         }
     }
 }

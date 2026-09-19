@@ -1,38 +1,80 @@
-name: Release tag
+name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  version-and-build:
-    name: Validate tag and build artifacts (${{ matrix.os }})
+  build:
+    name: Test and package (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      matrix: { os: [ubuntu-latest, windows-latest, macos-latest] }
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
     steps:
       - uses: actions/checkout@v4
-      - name: Validate Cargo version
-        shell: bash
-        run: |
-          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
-          test "$GITHUB_REF_NAME" = "v$version" || { echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $version"; exit 1; }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Validate release tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REF: ${{ github.ref_type }}
+        run: python scripts/package-release.py --check-tag
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install --yes libxkbcommon-dev libwayland-dev libegl1-mesa-dev
+        run: sudo apt-get update && sudo apt-get install --yes libxkbcommon-dev libwayland-dev libegl1-mesa-dev libgtk-3-dev libayatana-appindicator3-dev
       - uses: dtolnay/rust-toolchain@stable
-        with: { toolchain: 1.88.0 }
+        with:
+          toolchain: 1.88.0
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --locked
-      - name: Package Unix binary
-        if: runner.os != 'Windows'
-        run: cp target/release/aiu "aiu-${{ runner.os }}"
-      - name: Package Windows binary
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: Copy-Item target/release/aiu.exe "aiu-Windows.exe"
+        with: { key: '${{ matrix.target }}' }
+      - run: cargo test --locked --all-features
+      - run: cargo check --locked --no-default-features
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Check packaged executable
+        shell: bash
+        run: |
+          binary="target/${{ matrix.target }}/release/aiu"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then binary="$binary.exe"; fi
+          "$binary" --version
+          "$binary" --fixture fixtures/demo.json --json
+      - run: python scripts/package-release.py --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
-          name: aiu-${{ runner.os }}-${{ github.ref_name }}
-          path: aiu-*
+          name: release-${{ matrix.target }}
+          path: dist/aiu-*
+          if-no-files-found: error
+  draft:
+    name: Assemble verified release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum aiu-* > SHA256SUMS
+      - name: Create draft with all platform archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" dist/* --verify-tag --draft --title "AIU Rust $RELEASE_TAG" --notes-file "release-notes/$RELEASE_TAG.md"

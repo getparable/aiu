@@ -5,6 +5,8 @@ use regex::Regex;
 use serde_json::{Map, Value};
 use std::cmp::Ordering;
 
+const RECOMMENDATION_MAX_AGE_MS: i64 = 15 * 60 * 1000;
+
 use crate::model::{AccountView, LoginHealth, Provider, Record, Window};
 
 fn num(v: Option<&Value>) -> Option<f64> {
@@ -362,43 +364,68 @@ fn scoped(w: &Window) -> bool {
 #[derive(Clone)]
 struct Fit {
     weekly: f64,
-    session: f64,
+    session: Option<f64>,
+    stale: bool,
     score: f64,
     flagship: Option<f64>,
     tier: String,
 }
 
-fn fit(a: &AccountView) -> Option<Fit> {
+fn fit(a: &AccountView, now: DateTime<Utc>) -> Option<Fit> {
     if !a.error.is_empty()
         || a.read_only
         || ["missing", "expired"].contains(&a.login.state.as_str())
+        || a.fetched_at <= 0
+        || now.timestamp_millis().saturating_sub(a.fetched_at) > RECOMMENDATION_MAX_AGE_MS
     {
         return None;
     }
-    let weekly = a
+    let weekly_windows: Vec<&Window> = a
         .windows
         .iter()
-        .filter(|w| w.group == "weekly" && !scoped(w) && w.known)
-        .map(|w| {
-            if w.severity == "locked" {
-                100.0
-            } else {
-                w.percent
-            }
-        })
-        .max_by(|x, y| x.partial_cmp(y).unwrap_or(Ordering::Equal))?;
-    let session = a
-        .windows
+        .filter(|w| w.group == "weekly" && !scoped(w))
+        .collect();
+    let weekly_locked = weekly_windows.iter().any(|w| w.severity == "locked");
+    let weekly_unknown = weekly_windows
         .iter()
-        .filter(|w| w.group == "session" && w.known)
-        .map(|w| {
-            if w.severity == "locked" {
-                100.0
-            } else {
-                w.percent
-            }
-        })
-        .fold(0.0, f64::max);
+        .any(|w| !w.known && w.severity != "locked");
+    if weekly_unknown {
+        return None;
+    }
+    let weekly = if weekly_locked {
+        100.0
+    } else {
+        weekly_windows
+            .iter()
+            .filter(|w| w.known)
+            .map(|w| w.percent)
+            .max_by(|x, y| x.partial_cmp(y).unwrap_or(Ordering::Equal))?
+    };
+    let session_windows: Vec<&Window> = a.windows.iter().filter(|w| w.group == "session").collect();
+    let session_locked = session_windows.iter().any(|w| w.severity == "locked");
+    let session_unknown = session_windows
+        .iter()
+        .any(|w| !w.known && w.severity != "locked");
+    if session_unknown {
+        return None;
+    }
+    let session = if session_windows.is_empty() {
+        Some(0.0)
+    } else if session_locked {
+        Some(100.0)
+    } else {
+        session_windows
+            .iter()
+            .filter(|w| w.known)
+            .map(|w| w.percent)
+            .max_by(|x, y| x.partial_cmp(y).unwrap_or(Ordering::Equal))
+            .or_else(|| {
+                session_windows
+                    .iter()
+                    .any(|w| w.severity == "locked")
+                    .then_some(100.0)
+            })
+    };
     let flag = a
         .windows
         .iter()
@@ -425,6 +452,7 @@ fn fit(a: &AccountView) -> Option<Fit> {
     Some(Fit {
         weekly,
         session,
+        stale: !a.stale.is_empty(),
         score: (100.0 - weekly) * weight,
         flagship: flag,
         tier: a.tier.clone(),
@@ -447,19 +475,19 @@ pub fn recommend(accounts: &mut [AccountView], now: DateTime<Utc>) {
             .collect();
         let flagship_matters = ids
             .iter()
-            .filter_map(|&i| fit(&accounts[i]).and_then(|f| f.flagship))
+            .filter_map(|&i| fit(&accounts[i], now).and_then(|f| f.flagship))
             .next()
             .is_some();
         let mut valid: Vec<(usize, Fit)> = ids
             .iter()
-            .filter_map(|&i| fit(&accounts[i]).map(|f| (i, f)))
+            .filter_map(|&i| fit(&accounts[i], now).map(|f| (i, f)))
             .collect();
         if valid.is_empty() {
             continue;
         }
         let usable = |f: &Fit| {
             f.weekly < 100.0
-                && f.session < 100.0
+                && f.session.is_some_and(|session| session < 100.0)
                 && (!flagship_matters || f.flagship.map(|x| x < 100.0).unwrap_or(false))
         };
         valid.sort_by(|a, b| {
@@ -467,8 +495,9 @@ pub fn recommend(accounts: &mut [AccountView], now: DateTime<Utc>) {
             let band = |f: &Fit| {
                 (
                     f.weekly >= 100.0,
-                    f.session >= 100.0,
+                    f.session.map(|session| session >= 100.0).unwrap_or(true),
                     flagship_matters && f.flagship.map(|x| x >= 100.0).unwrap_or(true),
+                    f.stale,
                 )
             };
             band(af)
@@ -505,7 +534,7 @@ pub fn recommend(accounts: &mut [AccountView], now: DateTime<Utc>) {
                 .or_else(|| valid.first().map(|x| x.0))
         };
         if let Some(i) = pick {
-            let f = fit(&accounts[i]).unwrap();
+            let f = fit(&accounts[i], now).unwrap();
             accounts[i].recommended = true;
             accounts[i].all_spent = all_spent;
             let mut why = if all_spent {
@@ -516,7 +545,7 @@ pub fn recommend(accounts: &mut [AccountView], now: DateTime<Utc>) {
             if !f.tier.is_empty() {
                 why.push_str(&format!(" · {}", f.tier));
             }
-            if f.session >= 100.0 {
+            if f.session.is_some_and(|session| session >= 100.0) {
                 why.push_str(" · 5h limit hit");
             }
             if flagship_matters && f.flagship.map(|x| x >= 100.0).unwrap_or(true) && !all_spent {
@@ -618,6 +647,7 @@ mod tests {
             provider,
             tier: tier.into(),
             windows,
+            fetched_at: 1_767_225_600_000,
             login: LoginHealth {
                 state: "ok".into(),
                 ..Default::default()
@@ -650,7 +680,13 @@ mod tests {
                 .count(),
             1
         );
-        assert!(all[0].recommended || all[1].recommended);
+        assert!(
+            all[0].recommended,
+            "known flagship access and 20x capacity beat the unscoped Pro account"
+        );
+        assert!(!all[1].recommended);
+        assert!(all[0].why.contains("50% of the week left"));
+        assert!(all[0].why.contains("Max 20x"));
     }
 
     #[test]

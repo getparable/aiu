@@ -28,19 +28,54 @@ fn config(tmp: &TempDir) -> Config {
     c
 }
 type MockResponse = (u16, String, Vec<(String, String)>);
+struct ExpectedRequest {
+    method: &'static str,
+    path: &'static str,
+    authorization: Option<&'static str>,
+    headers: Vec<(&'static str, &'static str)>,
+    body_contains: Vec<&'static str>,
+}
 fn server(responses: Vec<MockResponse>) -> (String, Arc<AtomicUsize>, thread::JoinHandle<()>) {
+    server_checked(responses, Vec::new())
+}
+fn server_checked(
+    responses: Vec<MockResponse>,
+    expected: Vec<ExpectedRequest>,
+) -> (String, Arc<AtomicUsize>, thread::JoinHandle<()>) {
     let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
     let url = format!("http://{}", server.server_addr());
     let n = Arc::new(AtomicUsize::new(0));
     let nn = n.clone();
     let h = thread::spawn(move || {
-        for (status, body, headers) in responses {
+        for (index, (status, body, headers)) in responses.into_iter().enumerate() {
             let mut request = server
                 .recv_timeout(Duration::from_secs(5))
                 .unwrap()
                 .expect("expected mock request within five seconds");
             let mut request_body = Vec::new();
             request.as_reader().read_to_end(&mut request_body).unwrap();
+            if let Some(expectation) = expected.get(index) {
+                assert_eq!(request.method().as_str(), expectation.method);
+                assert_eq!(request.url().split('?').next().unwrap(), expectation.path);
+                let header = |name: &str| {
+                    request
+                        .headers()
+                        .iter()
+                        .find(|h| h.field.as_str().to_string().eq_ignore_ascii_case(name))
+                        .map(|h| h.value.as_str())
+                };
+                assert_eq!(header("Authorization"), expectation.authorization);
+                for (name, value) in &expectation.headers {
+                    assert_eq!(header(name), Some(*value), "header {name}");
+                }
+                let body = String::from_utf8_lossy(&request_body);
+                for fragment in &expectation.body_contains {
+                    assert!(
+                        body.contains(fragment),
+                        "request body missing {fragment:?}: {body}"
+                    );
+                }
+            }
             nn.fetch_add(1, Ordering::SeqCst);
             let mut response = tiny_http::Response::from_string(body)
                 .with_status_code(status)
@@ -114,15 +149,47 @@ fn provider_filter_does_not_call_other_endpoint() {
     let a1 = record(Provider::Claude, "c@example.test");
     let a2 = record(Provider::Codex, "x@example.test");
     seed(&c, &[a1, a2]);
-    let (u, n, h) = server(vec![(
-        200,
-        r#"{"five_hour":{"utilization":1}}"#.into(),
-        vec![],
-    )]);
-    c.claude_usage_url = u.clone();
+    let (u, n, h) = server_checked(
+        vec![(200, r#"{"five_hour":{"utilization":1}}"#.into(), vec![])],
+        vec![ExpectedRequest {
+            method: "GET",
+            path: "/usage",
+            authorization: Some("Bearer access-secret"),
+            headers: vec![("anthropic-beta", "oauth-2025-04-20")],
+            body_contains: vec![],
+        }],
+    );
+    c.claude_usage_url = format!("{u}/usage");
     c.codex_usage_url = "http://127.0.0.1:9/unused".into();
     let app = App::new(c).unwrap();
     let out = app.status(Some(Provider::Claude), true).unwrap();
+    h.join().unwrap();
+    assert_eq!(out.accounts.len(), 1);
+    assert_eq!(n.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn codex_usage_sends_account_header_and_bearer_token() {
+    let t = TempDir::new().unwrap();
+    let mut c = config(&t);
+    let mut r = record(Provider::Codex, "codex@example.test");
+    r.account_id = "org-123".into();
+    seed(&c, &[r]);
+    let (u, n, h) = server_checked(
+        vec![(200, r#"{"five_hour":{"utilization":4}}"#.into(), vec![])],
+        vec![ExpectedRequest {
+            method: "GET",
+            path: "/usage",
+            authorization: Some("Bearer access-secret"),
+            headers: vec![("ChatGPT-Account-Id", "org-123")],
+            body_contains: vec![],
+        }],
+    );
+    c.codex_usage_url = format!("{u}/usage");
+    let out = App::new(c)
+        .unwrap()
+        .status(Some(Provider::Codex), true)
+        .unwrap();
     h.join().unwrap();
     assert_eq!(out.accounts.len(), 1);
     assert_eq!(n.load(Ordering::SeqCst), 1);
@@ -134,9 +201,13 @@ fn unauthorized_usage_refreshes_once_then_retries_and_views_contain_no_credentia
     let mut c = config(&t);
     let r = record(Provider::Claude, "retry@example.test");
     seed(&c, &[r]);
-    let (u,n,h)=server(vec![(401,"{}".into(),vec![]),(200,r#"{"access_token":"rotated-access","refresh_token":"rotated-refresh","expires_in":3600}"#.into(),vec![]),(200,r#"{"five_hour":{"utilization":2}}"#.into(),vec![])]);
-    c.claude_usage_url = u.clone();
-    c.claude_token_urls = vec![u];
+    let (u,n,h)=server_checked(vec![(401,"{}".into(),vec![]),(200,r#"{"access_token":"rotated-access","refresh_token":"rotated-refresh","expires_in":3600}"#.into(),vec![]),(200,r#"{"five_hour":{"utilization":2}}"#.into(),vec![])], vec![
+        ExpectedRequest { method: "GET", path: "/usage", authorization: Some("Bearer access-secret"), headers: vec![("anthropic-beta", "oauth-2025-04-20")], body_contains: vec![] },
+        ExpectedRequest { method: "POST", path: "/token", authorization: None, headers: vec![("Content-Type", "application/json")], body_contains: vec!["grant_type", "refresh_token", "refresh-secret", "client_id"] },
+        ExpectedRequest { method: "GET", path: "/usage", authorization: Some("Bearer rotated-access"), headers: vec![("anthropic-beta", "oauth-2025-04-20")], body_contains: vec![] },
+    ]);
+    c.claude_usage_url = format!("{u}/usage");
+    c.claude_token_urls = vec![format!("{u}/token")];
     let app = App::new(c).unwrap();
     let out = app.status(Some(Provider::Claude), true).unwrap();
     h.join().unwrap();

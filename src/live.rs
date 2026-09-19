@@ -285,6 +285,7 @@ pub fn codex_identity(id_token: &str, account_id: &str) -> Record {
         r.plan_type = strv(a, "chatgpt_plan_type");
         r.user_id = strv(a, "chatgpt_user_id");
     }
+    r.org_uuid = r.account_id.clone();
     r
 }
 

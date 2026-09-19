@@ -5,6 +5,7 @@ use crate::{
 use anyhow::{Context, Result, bail};
 use fs2::FileExt;
 use serde::{Serialize, de::DeserializeOwned};
+use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
     io::Write,
@@ -13,6 +14,8 @@ use std::{
     time::{Duration, Instant},
 };
 use tempfile::NamedTempFile;
+
+const PENDING_PREFIX: &str = "__pending__:";
 
 pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
     match fs::read(path) {
@@ -89,12 +92,34 @@ pub fn lock(path: &Path) -> Result<FileLock> {
     }
 }
 
+/// Claim optional background work without making interactive commands wait.
+pub fn try_lock(path: &Path) -> Result<Option<FileLock>> {
+    private_dir(path)?;
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(path)?;
+    match file.try_lock_exclusive() {
+        Ok(()) => Ok(Some(FileLock { file })),
+        Err(error) if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
+            Ok(None)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 pub struct Store {
     config: Config,
 }
 impl Store {
     pub fn new(config: Config) -> Self {
         Self { config }
+    }
+    pub fn account_lock(&self, key: &str) -> Result<FileLock> {
+        let digest = format!("{:x}", Sha256::digest(key.as_bytes()));
+        lock(&self.config.dir.join(format!("account-{digest}.lock")))
     }
     fn token_path(&self) -> PathBuf {
         match self.config.store_mode {
@@ -151,6 +176,122 @@ impl Store {
     pub fn delete(&self, key: &str) -> Result<()> {
         self.with_tokens(|m| {
             m.remove(key);
+            Ok(())
+        })
+    }
+
+    /// Save a credential that has been refreshed but has not yet been indexed.
+    /// It lives in the same protected token container as normal records.
+    pub fn set_pending(
+        &self,
+        provider: crate::model::Provider,
+        spent_refresh: &str,
+        record: &Record,
+    ) -> Result<()> {
+        let recovery_id = if spent_refresh.is_empty() {
+            format!(
+                "access:{:x}",
+                Sha256::digest(record.access_token.as_bytes())
+            )
+        } else {
+            spent_refresh.to_owned()
+        };
+        let lineage = format!("{provider}:{recovery_id}");
+        let digest = format!("{:x}", Sha256::digest(lineage.as_bytes()));
+        self.with_tokens(|m| {
+            // Keep every earlier spent-token alias pointed at the newest pair,
+            // including a retry that rotates an already-pending credential.
+            for (key, value) in m.iter_mut() {
+                if key.starts_with(&format!("{PENDING_PREFIX}{provider}:")) {
+                    let (_, pending) = Self::decode_pending(value.clone())?;
+                    if !spent_refresh.is_empty() && pending.refresh_token == spent_refresh {
+                        value["record"] = serde_json::to_value(record)?;
+                    }
+                }
+            }
+            m.insert(
+                format!("{PENDING_PREFIX}{provider}:{digest}"),
+                serde_json::json!({ "spent_refresh": recovery_id, "record": record }),
+            );
+            Ok(())
+        })
+    }
+
+    pub fn pending(&self, provider: crate::model::Provider) -> Result<Option<(String, Record)>> {
+        let values = self.read_tokens()?.unwrap_or_default();
+        let Some(value) = values.into_iter().find_map(|(key, value)| {
+            key.starts_with(&format!("{PENDING_PREFIX}{provider}:"))
+                .then_some(value)
+        }) else {
+            return Ok(None);
+        };
+        Self::decode_pending(value).map(Some)
+    }
+
+    pub fn pending_matching(
+        &self,
+        provider: crate::model::Provider,
+        access: &str,
+        refresh: &str,
+    ) -> Result<Option<(String, Record)>> {
+        let values = self.read_tokens()?.unwrap_or_default();
+        for (key, value) in values {
+            if !key.starts_with(&format!("{PENDING_PREFIX}{provider}:")) {
+                continue;
+            }
+            let decoded = Self::decode_pending(value)?;
+            if (!refresh.is_empty() && (decoded.0 == refresh || decoded.1.refresh_token == refresh))
+                || (!access.is_empty() && decoded.1.access_token == access)
+            {
+                return Ok(Some(decoded));
+            }
+        }
+        Ok(None)
+    }
+
+    fn decode_pending(value: serde_json::Value) -> Result<(String, Record)> {
+        let spent = value
+            .get("spent_refresh")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let record = serde_json::from_value(
+            value
+                .get("record")
+                .cloned()
+                .context("pending credential is missing its record")?,
+        )?;
+        Ok((spent, record))
+    }
+
+    pub fn clear_pending(
+        &self,
+        provider: crate::model::Provider,
+        spent_refresh: &str,
+    ) -> Result<()> {
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(format!("{provider}:{spent_refresh}").as_bytes())
+        );
+        let key = format!("{PENDING_PREFIX}{provider}:{digest}");
+        self.with_tokens(|m| {
+            if let Some(value) = m.get(&key) {
+                let (_, committed) = Self::decode_pending(value.clone())?;
+                let mut aliases = Vec::new();
+                for (candidate, value) in m.iter() {
+                    if candidate.starts_with(&format!("{PENDING_PREFIX}{provider}:")) {
+                        let (_, record) = Self::decode_pending(value.clone())?;
+                        if record.access_token == committed.access_token
+                            && record.refresh_token == committed.refresh_token
+                        {
+                            aliases.push(candidate.clone());
+                        }
+                    }
+                }
+                for alias in aliases {
+                    m.remove(&alias);
+                }
+            }
             Ok(())
         })
     }

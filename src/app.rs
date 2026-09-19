@@ -34,10 +34,36 @@ struct CachedUsage {
     last_error: String,
     needs_login: bool,
     token_updated_at: i64,
+    credential_generation: String,
 }
 type Cache = BTreeMap<String, CachedUsage>;
 
-#[derive(Default, Serialize, Deserialize)]
+impl CachedUsage {
+    fn adopt_generation(&mut self, record: &Record) {
+        let generation = credential_generation(record);
+        let changed = if self.credential_generation.is_empty() {
+            self.token_updated_at != record.updated_at
+        } else {
+            self.credential_generation != generation
+        };
+        if changed && self.needs_login {
+            self.needs_login = false;
+            self.last_error.clear();
+        }
+        self.credential_generation = generation;
+        self.token_updated_at = record.updated_at;
+    }
+}
+
+fn credential_generation(record: &Record) -> String {
+    let mut hash = Sha256::new();
+    hash.update(record.access_token.as_bytes());
+    hash.update([0]);
+    hash.update(record.refresh_token.as_bytes());
+    format!("{:x}", hash.finalize())
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 struct ProfileCache {
     profile: serde_json::Map<String, Value>,
@@ -83,6 +109,10 @@ impl App {
     }
 
     fn save_account(&self, mut record: Record, label: Option<&str>) -> Result<IndexEntry> {
+        // Lock order: account ownership, then brief shared state commits. Never
+        // wait for account ownership or perform HTTP while holding app.lock.
+        let _account = self.store.account_lock(&record.key())?;
+        let _guard = self.guard()?;
         let mut index = self.store.load_index()?;
         let previous = index
             .accounts
@@ -137,39 +167,62 @@ impl App {
             index.accounts.push(entry.clone());
         }
         self.store.save_index(&index)?;
+        // A pending rotated credential is recoverable until both the protected
+        // record and its index entry have been committed.
+        if let Some((spent, _)) = self.store.pending_matching(
+            record.provider,
+            &record.access_token,
+            &record.refresh_token,
+        )? {
+            self.store.clear_pending(record.provider, &spent)?;
+        }
         // A new login clears cached authentication failures, but never bypasses a 429.
         let mut cache: Cache = storage::read_json(&self.config.cache_file())?.unwrap_or_default();
         if let Some(cached) = cache.get_mut(&entry.key()) {
-            cached.needs_login = false;
-            cached.last_error.clear();
-            if cached.limited_until <= now.timestamp_millis() {
-                cached.attempted_at = 0;
-            }
+            cached.adopt_generation(&record);
             storage::write_json(&self.config.cache_file(), &cache)?;
         }
         Ok(entry)
     }
 
     pub fn add(&self, provider: Provider, label: Option<&str>) -> Result<IndexEntry> {
-        let _guard = self.guard()?;
-        let mut record = live::read(&self.config, provider)?.with_context(|| {
+        let _import = storage::lock(&self.config.dir.join(format!("import-{provider}.lock")))?;
+        let refresh_guard = storage::lock(&self.config.dir.join("refresh.lock"))?;
+        let live_record = live::read(&self.config, provider)?.with_context(|| {
             format!(
                 "no {} login found; sign in there first or run aiu login",
                 provider.client()
             )
         })?;
+        // If a previous add reached refresh but failed during hand-back or
+        // identity verification, recover its protected credential when the
+        // live login still belongs to that refresh lineage.
+        let pending = self.store.pending_matching(
+            provider,
+            &live_record.access_token,
+            &live_record.refresh_token,
+        )?;
+        let recovered_spent = pending.as_ref().map(|(spent, _)| spent.clone());
+        let mut record = pending.map(|(_, record)| record).unwrap_or(live_record);
         if record.is_expired(Utc::now().timestamp_millis(), REFRESH_MARGIN) {
             let refreshed = self.api.refresh(&record)?;
+            self.store
+                .set_pending(provider, &record.refresh_token, &refreshed)?;
             live::hand_back(&self.config, &record.refresh_token, &refreshed)?;
             record = refreshed;
+        } else if let Some(spent) = recovered_spent {
+            live::hand_back(&self.config, &spent, &record)?;
         }
+        drop(refresh_guard);
         self.identify(&mut record)?;
         record.source = format!("{}-cli", provider);
         self.save_account(record, label)
     }
 
     pub fn save_login(&self, mut record: Record, label: Option<&str>) -> Result<IndexEntry> {
-        let _guard = self.guard()?;
+        // Browser-issued credentials also survive a later profile or index failure.
+        self.store
+            .set_pending(record.provider, &record.refresh_token, &record)?;
         self.identify(&mut record)?;
         record.source = "oauth-login".into();
         self.save_account(record, label)
@@ -204,25 +257,40 @@ impl App {
         current.org_uuid.clear();
         if verify && !current.is_expired(Utc::now().timestamp_millis(), 0) {
             let path = self.config.dir.join("profile-cache.json");
-            let mut cache: BTreeMap<String, ProfileCache> =
-                storage::read_json(&path)?.unwrap_or_default();
             let key = format!("{:x}", Sha256::digest(current.access_token.as_bytes()));
-            let now = Utc::now().timestamp_millis();
-            let cached = cache.entry(key).or_default();
-            if cached.attempted_at == 0 || now - cached.attempted_at >= 600_000 {
-                cached.attempted_at = now;
-                match self.api.profile(&current.access_token) {
-                    Ok(profile) => cached.profile = profile,
-                    Err(error) => {
-                        storage::write_json(&path, &cache)?;
-                        return Err(error.context("could not verify the active Claude account"));
-                    }
+            let profile_owner =
+                storage::try_lock(&self.config.dir.join(format!("profile-{key}.lock")))?;
+            let mut cached;
+            let fetch;
+            {
+                let _guard = self.guard()?;
+                let mut cache: BTreeMap<String, ProfileCache> =
+                    storage::read_json(&path)?.unwrap_or_default();
+                cached = cache.remove(&key).unwrap_or_default();
+                let now = Utc::now().timestamp_millis();
+                fetch = profile_owner.is_some()
+                    && (cached.attempted_at == 0 || now - cached.attempted_at >= 600_000);
+                if fetch {
+                    cached.attempted_at = now;
+                    cache.insert(key.clone(), cached.clone());
+                    storage::write_json(&path, &cache)?;
                 }
             }
-            if !cached.profile.is_empty() {
-                apply_profile(&mut current, cached.profile.clone())?;
+            if fetch {
+                let profile = self
+                    .api
+                    .profile(&current.access_token)
+                    .context("could not verify the active Claude account")?;
+                cached.profile = profile;
+                let _guard = self.guard()?;
+                let mut cache: BTreeMap<String, ProfileCache> =
+                    storage::read_json(&path)?.unwrap_or_default();
+                cache.insert(key, cached.clone());
+                storage::write_json(&path, &cache)?;
             }
-            storage::write_json(&path, &cache)?;
+            if !cached.profile.is_empty() {
+                apply_profile(&mut current, cached.profile)?;
+            }
         }
         Ok(Some(current))
     }
@@ -250,48 +318,131 @@ impl App {
                                 Provider::Claude => current.expires_at > saved.expires_at,
                                 Provider::Codex => current.last_refresh > saved.last_refresh,
                             };
-                            if newer && current.access_token != saved.access_token {
+                            if !newer || current.access_token == saved.access_token {
+                                continue;
+                            }
+                            let result = (|| -> Result<()> {
+                                let _account = self.store.account_lock(&saved.key())?;
+                                let _guard = self.guard()?;
+                                if !self.is_indexed(&saved.key())? {
+                                    saved.missing = true;
+                                    return Ok(());
+                                }
+                                let Some(latest) = self.store.get(&saved.key())? else {
+                                    return Ok(());
+                                };
+                                *saved = latest;
+                                let newer = match p {
+                                    Provider::Claude => current.expires_at > saved.expires_at,
+                                    Provider::Codex => current.last_refresh > saved.last_refresh,
+                                };
+                                if !newer || current.access_token == saved.access_token {
+                                    return Ok(());
+                                }
                                 let mut next = current.clone();
                                 next.label = saved.label.clone();
                                 next.source = saved.source.clone();
                                 next.captured_at = saved.captured_at;
-                                next.updated_at = Utc::now().timestamp_millis();
+                                next.updated_at = Utc::now()
+                                    .timestamp_millis()
+                                    .max(saved.updated_at.saturating_add(1));
                                 if next.refresh_token.is_empty() {
                                     next.refresh_token = saved.refresh_token.clone();
                                 }
-                                match self.store.set(&next) {
-                                    Ok(()) => *saved = next,
-                                    Err(e) => warnings.push(redact(&e.to_string())),
+                                self.store.set(&next)?;
+                                let mut cache: Cache =
+                                    storage::read_json(&self.config.cache_file())?
+                                        .unwrap_or_default();
+                                if let Some(cached) = cache.get_mut(&next.key()) {
+                                    cached.adopt_generation(&next);
                                 }
+                                storage::write_json(&self.config.cache_file(), &cache)?;
+                                *saved = next;
+                                Ok(())
+                            })();
+                            if let Err(error) = result {
+                                warnings.push(redact(&error.to_string()));
                             }
                         }
                     }
                     active.push(current);
                 }
                 Ok(None) => {}
-                Err(e) => warnings.push(redact(&e.to_string())),
+                Err(error) => warnings.push(redact(&error.to_string())),
             }
         }
         active
     }
 
+    fn is_indexed(&self, key: &str) -> Result<bool> {
+        Ok(self
+            .store
+            .load_index()?
+            .accounts
+            .iter()
+            .any(|entry| entry.key() == key))
+    }
+
+    // Caller holds account ownership. Only this rotation lock spans refresh I/O;
+    // interactive state commits never wait behind it while holding app.lock.
     fn ensure_fresh(
         &self,
         record: &mut Record,
         force: bool,
+        allow_live_refresh: bool,
         warnings: &mut Vec<String>,
     ) -> Result<()> {
         if !force && !record.is_expired(Utc::now().timestamp_millis(), REFRESH_MARGIN) {
             return Ok(());
         }
-        let spent = record.refresh_token.clone();
-        let mut next = self.api.refresh(record)?;
-        next.updated_at = Utc::now().timestamp_millis();
-        // Persist the rotated pair before attempting hand-back so it cannot be lost.
-        self.store.set(&next)?;
-        if let Err(e) = live::hand_back(&self.config, &spent, &next) {
+        let _refresh = storage::lock(&self.config.dir.join("refresh.lock"))?;
+        if !self.is_indexed(&record.key())? {
+            bail!("account was removed before refresh");
+        }
+        // A concurrent explicit import may have completed while we waited.
+        if let Some(latest) = self.store.get(&record.key())?
+            && credential_generation(&latest) != credential_generation(record)
+        {
+            *record = latest;
+            if !record.is_expired(Utc::now().timestamp_millis(), REFRESH_MARGIN) {
+                return Ok(());
+            }
+        }
+        if !allow_live_refresh && self.shares_live_credentials(record)? {
+            bail!(
+                "The active {} login is managed by its CLI. Open the CLI to renew it, then refresh AIU.",
+                record.provider.client()
+            );
+        }
+        let (spent, mut next) = if let Some(pending) = self.store.pending_matching(
+            record.provider,
+            &record.access_token,
+            &record.refresh_token,
+        )? {
+            pending
+        } else {
+            let spent = record.refresh_token.clone();
+            let next = self.api.refresh(record)?;
+            // Before hand-back, identity checks, or any other fallible operation.
+            self.store.set_pending(record.provider, &spent, &next)?;
+            (spent, next)
+        };
+        next.updated_at = Utc::now()
+            .timestamp_millis()
+            .max(record.updated_at.saturating_add(1));
+        {
+            let _guard = self.guard()?;
+            if !self.is_indexed(&record.key())? {
+                bail!(
+                    "account was removed; replacement credentials remain in protected pending storage"
+                );
+            }
+            self.store.set(&next)?;
+            self.store.clear_pending(record.provider, &spent)?;
+        }
+        if let Err(error) = live::hand_back(&self.config, &spent, &next) {
             warnings.push(redact(&format!(
-                "refreshed login saved, but could not update {}: {e}",
+                "refreshed login saved, but could not update {}: {error}",
                 record.provider.client()
             )));
         }
@@ -299,57 +450,86 @@ impl App {
         Ok(())
     }
 
+    fn shares_live_credentials(&self, record: &Record) -> Result<bool> {
+        Ok(
+            live::read(&self.config, record.provider)?.is_some_and(|current| {
+                (!record.refresh_token.is_empty() && record.refresh_token == current.refresh_token)
+                    || (!record.access_token.is_empty()
+                        && record.access_token == current.access_token)
+            }),
+        )
+    }
+
     pub fn status(&self, provider: Option<Provider>, no_sync: bool) -> Result<Snapshot> {
-        let guard = self.guard();
-        let may_fetch = guard.is_ok();
+        // One background poller owns network scheduling; other status callers
+        // immediately render the shared cache. Account commands use separate locks.
+        let poll_guard = storage::try_lock(&self.config.dir.join("poll.lock"))?;
+        let may_fetch = poll_guard.is_some();
         let mut warnings = Vec::new();
         if !may_fetch {
-            warnings.push("another AIU process is busy; showing cached usage".into());
+            warnings.push("another AIU process is updating usage; showing cached usage".into());
         }
-        let mut records = self.store.records()?;
+        let mut records = {
+            let _guard = self.guard()?;
+            self.store.records()?
+        };
         let empty = records.is_empty();
-        if empty {
-            return Ok(Snapshot {
-                empty: true,
-                generated_at: Utc::now().to_rfc3339(),
-                warnings,
-                ..Default::default()
-            });
-        }
-        records.retain(|r| provider.is_none_or(|p| r.provider == p));
+        records.retain(|record| provider.is_none_or(|p| record.provider == p));
         let active =
             self.sync_records(&mut records, provider, !no_sync && may_fetch, &mut warnings);
-        let mut cache: Cache = storage::read_json(&self.config.cache_file())?.unwrap_or_default();
         let mut accounts = Vec::new();
         let mut fetched = false;
         for mut record in records {
             let key = record.key();
-            let mut cached = cache.get(&key).cloned().unwrap_or_default();
-            let now = Utc::now().timestamp_millis();
-            let spacing = if cached.last_limited_at > 0 && now - cached.last_limited_at < 3_600_000
-            {
-                SPACING * 2
+            let _account = if may_fetch {
+                Some(self.store.account_lock(&key)?)
             } else {
-                SPACING
+                None
             };
-            if !record.missing
-                && may_fetch
-                && now >= cached.limited_until
-                && (cached.attempted_at == 0 || now - cached.attempted_at >= spacing)
+            let mut cached;
+            let should_fetch;
             {
+                let _guard = self.guard()?;
+                if !self.is_indexed(&key)? {
+                    continue;
+                }
+                if let Some(latest) = self.store.get(&key)? {
+                    record = latest;
+                }
+                let mut cache: Cache =
+                    storage::read_json(&self.config.cache_file())?.unwrap_or_default();
+                cached = cache.get(&key).cloned().unwrap_or_default();
+                cached.adopt_generation(&record);
+                let now = Utc::now().timestamp_millis();
+                let spacing =
+                    if cached.last_limited_at > 0 && now - cached.last_limited_at < 3_600_000 {
+                        SPACING * 2
+                    } else {
+                        SPACING
+                    };
+                should_fetch = may_fetch
+                    && !record.missing
+                    && now >= cached.limited_until
+                    && (cached.attempted_at == 0 || now - cached.attempted_at >= spacing);
+                if should_fetch {
+                    cached.attempted_at = now;
+                }
+                if may_fetch {
+                    cache.insert(key.clone(), cached.clone());
+                    // Durable claim before I/O, including crash-safe spacing.
+                    storage::write_json(&self.config.cache_file(), &cache)?;
+                }
+            }
+            if should_fetch {
                 if fetched {
                     std::thread::sleep(Duration::from_millis(300));
                 }
                 fetched = true;
-                cached.attempted_at = Utc::now().timestamp_millis();
-                cache.insert(key.clone(), cached.clone());
-                // Claim before I/O: a crash still consumes the shared request slot.
-                storage::write_json(&self.config.cache_file(), &cache)?;
                 let response = (|| {
-                    self.ensure_fresh(&mut record, false, &mut warnings)?;
+                    self.ensure_fresh(&mut record, false, false, &mut warnings)?;
                     let mut response = self.api.usage(&record)?;
-                    if response.status == 401 {
-                        self.ensure_fresh(&mut record, true, &mut warnings)?;
+                    if response.status == 401 && !self.shares_live_credentials(&record)? {
+                        self.ensure_fresh(&mut record, true, false, &mut warnings)?;
                         response = self.api.usage(&record)?;
                     }
                     Ok::<_, anyhow::Error>(response)
@@ -398,9 +578,17 @@ impl App {
                             || message.contains("refresh failed (401");
                     }
                 }
+                cached.credential_generation = credential_generation(&record);
                 cached.token_updated_at = record.updated_at;
-                cache.insert(key.clone(), cached.clone());
-                storage::write_json(&self.config.cache_file(), &cache)?;
+                {
+                    let _guard = self.guard()?;
+                    let mut latest: Cache =
+                        storage::read_json(&self.config.cache_file())?.unwrap_or_default();
+                    if self.is_indexed(&key)? {
+                        latest.insert(key.clone(), cached.clone());
+                        storage::write_json(&self.config.cache_file(), &latest)?;
+                    }
+                }
             }
             let mut view = view_of(
                 &record,
@@ -450,8 +638,10 @@ impl App {
     }
 
     pub fn list(&self, provider: Option<Provider>) -> Result<Vec<AccountView>> {
-        let _guard = self.guard()?;
-        let mut records = self.store.records()?;
+        let mut records = {
+            let _guard = self.guard()?;
+            self.store.records()?
+        };
         let active = self.sync_records(&mut records, provider, false, &mut Vec::new());
         Ok(records
             .iter()
@@ -468,16 +658,20 @@ impl App {
     }
 
     pub fn sync(&self, provider: Option<Provider>) -> Result<Vec<String>> {
-        let _guard = self.guard()?;
-        let mut records = self.store.records()?;
+        let mut records = {
+            let _guard = self.guard()?;
+            self.store.records()?
+        };
         let mut warnings = Vec::new();
         self.sync_records(&mut records, provider, true, &mut warnings);
         Ok(warnings)
     }
 
     pub fn whoami(&self, provider: Option<Provider>) -> Result<Vec<LiveView>> {
-        let _guard = self.guard()?;
-        let records = self.store.records()?;
+        let records = {
+            let _guard = self.guard()?;
+            self.store.records()?
+        };
         let mut out = Vec::new();
         for p in [Provider::Claude, Provider::Codex] {
             if provider.is_some_and(|selected| selected != p) {
@@ -498,37 +692,53 @@ impl App {
     }
 
     pub fn switch(&self, target: &str, provider: Option<Provider>) -> Result<Vec<String>> {
-        let _guard = self.guard()?;
-        let mut records = self.store.records()?;
-        let index = self.store.load_index()?;
-        let entry = find_account(&index, target, provider)?;
+        let mut records = {
+            let _guard = self.guard()?;
+            self.store.records()?
+        };
+        let entry = {
+            let _guard = self.guard()?;
+            find_account(&self.store.load_index()?, target, provider)?.clone()
+        };
         let mut warnings = Vec::new();
         let current = self.sync_records(&mut records, Some(entry.provider), true, &mut warnings);
         if current.iter().any(|live| {
-            !records
-                .iter()
-                .any(|r| !r.missing && !live.email.is_empty() && r.key() == live.key())
+            !records.iter().any(|record| {
+                !record.missing && !live.email.is_empty() && record.key() == live.key()
+            })
         }) {
             warnings.push("The previous CLI login was not tracked in AIU and has been replaced. Add a login before switching to keep a copy.".into());
         }
-        let mut record = records
-            .into_iter()
-            .find(|r| r.key() == entry.key() && !r.missing)
-            .context("stored token missing; sign in again for this account")?;
+        let _account = self.store.account_lock(&entry.key())?;
+        let mut record = {
+            let _guard = self.guard()?;
+            if !self.is_indexed(&entry.key())? {
+                bail!("account was removed before switching");
+            }
+            self.store
+                .get(&entry.key())?
+                .context("stored token missing; sign in again for this account")?
+        };
         if record.is_read_only() {
             bail!("this Claude login is read-only; sign in with full scopes before switching");
         }
-        self.ensure_fresh(&mut record, false, &mut warnings)?;
+        self.ensure_fresh(&mut record, false, true, &mut warnings)?;
         live::write(&self.config, &record)?;
         Ok(warnings)
     }
 
     pub fn remove(&self, target: &str, provider: Option<Provider>) -> Result<IndexEntry> {
+        let entry = {
+            let _guard = self.guard()?;
+            find_account(&self.store.load_index()?, target, provider)?.clone()
+        };
+        let _account = self.store.account_lock(&entry.key())?;
         let _guard = self.guard()?;
         let mut index = self.store.load_index()?;
-        let entry = find_account(&index, target, provider)?.clone();
         self.store.delete(&entry.key())?;
-        index.accounts.retain(|a| a.key() != entry.key());
+        index
+            .accounts
+            .retain(|account| account.key() != entry.key());
         self.store.save_index(&index)?;
         let mut cache: Cache = storage::read_json(&self.config.cache_file())?.unwrap_or_default();
         cache.remove(&entry.key());

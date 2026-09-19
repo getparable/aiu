@@ -4,6 +4,8 @@ AIU is a Windows-first, cross-platform Rust monitor for Claude Code and Codex ac
 
 ## Install
 
+Download a native archive from [Releases](https://github.com/krflol/aiu-rs/releases/latest): Windows x64, Linux x64, macOS Apple Silicon, or macOS Intel. Extract it and run `aiu gui` (`aiu.exe gui` on Windows). Each archive includes the executable, this README and the license; `SHA256SUMS` lists archive checksums. Linux archives are built on Ubuntu 22.04 and need a compatible glibc plus the desktop runtime libraries described below. macOS binaries are not notarized.
+
 With Rust 1.88 or newer:
 
 ```sh
@@ -29,7 +31,11 @@ aiu whoami                     Identify active CLI logins
 aiu update                     Check this fork's releases; never installs
 ```
 
-Use `provider:email#organization-id` to disambiguate accounts. Start a new CLI session after switching. The desktop panel provides filters, usage bars, reset times, recommendations, browser sign-in, adding the current login, switching, and forgetting accounts. It is a regular window; tray integration and autostart are not included. `menubar` is an alias for `gui`.
+Use `provider:email#organization-id` to disambiguate accounts. Start a new CLI session after switching. The desktop panel provides filters, usage bars, reset times, recommendations, browser sign-in, adding the current login, switching, and forgetting accounts. `menubar` is an alias for `gui`.
+
+The desktop panel also keeps a system tray or menu bar icon while it runs. Closing the panel hides it when the tray is available; use the tray menu to show AIU again, refresh usage, or quit. On Windows, left-clicking the icon opens the panel and right-clicking opens its menu. On macOS, AIU appears in the menu bar. Linux uses GTK/AppIndicator, so a desktop session must provide an AppIndicator or StatusNotifier host; the panel remains available as a normal window if tray initialization fails.
+
+Browser sign-in denial ends the wait. Closing a browser tab does not send an OAuth callback; use **Cancel sign-in** in AIU to stop waiting. Quitting during an account update lets the update finish saving credentials before the process exits.
 
 ## Storage and settings
 
@@ -39,7 +45,15 @@ The default AIU directory is `%APPDATA%\aiu-rs` on Windows and `~/Library/Applic
 
 Usage is cached across processes under native file locks. Normal polling is limited to one request per account every five minutes. A 429 starts a ten-minute cooldown, doubling up to one hour, and honors longer `Retry-After` values. Recent throttling doubles normal request spacing. Cached failures are marked stale, and revoked logins remain visible as needing sign-in. Refresh hand-back re-reads the live token so it only updates a CLI still holding the token that was spent.
 
+The active CLI owns its shared login: background monitoring adopts newer CLI credentials and leaves their automatic rotation to the CLI. AIU refreshes independent saved credentials when needed. If the active login expires, open its CLI to renew it, then refresh AIU. Explicit **Add current** and **Switch** operations may refresh and update CLI credentials; avoid running CLI login/logout or another account switch concurrently with these operations. AIU's locks coordinate AIU processes, and its hand-back token check is not atomic relative to external programs that ignore those locks.
+
+Every successful rotation is saved in the protected token backend before hand-back or profile lookup. If an import fails afterward, the replacement remains in pending storage without an unverified account index entry. Retrying **Add current** recovers it when the live login matches that token lineage. Independent pending imports do not replace one another. A new credential generation clears rejection of the previous generation while retaining request spacing and throttling.
+
+Background polling owns a separate lock. Account ownership prevents duplicate refreshes and races with removal, while shared state locks are released during HTTP requests. A slow request for one account does not hold the lock used to commit unrelated account commands.
+
 Recommendations prioritize weekly availability, session availability, flagship-model access when reported, and then remaining weekly capacity weighted by explicitly stated plan multipliers.
+
+Explicit locks remain blocking even when utilization is unknown. Unknown capacity is excluded from recommendations. Usage older than 15 minutes remains visible but is not used for recommendations; among usable accounts, fresh evidence is preferred over a cached response marked stale.
 
 ## JSON compatibility
 
@@ -54,7 +68,9 @@ cargo test --locked --all-features
 cargo run -- gui --fixture fixtures/demo.json
 ```
 
-`AIU_JSON_FIXTURE` also selects a fixture. Fixture mode skips credential access and provider requests. Tests use synthetic tokens, temporary homes and local mock servers. CI tests Windows, Linux and macOS, and uploads platform binaries as workflow artifacts. Linux desktop builds may need `libxkbcommon-dev`, `libwayland-dev` and `libegl1-mesa-dev`; the panel requires a graphical session.
+On an interactive Windows desktop, run `powershell -File scripts/test-tray.ps1` after `cargo build` to verify native tray creation, hiding and restoring the panel, the menu actions, and quitting while hidden. Use `-BinaryPath target/release/aiu.exe` to check a release build.
+
+`AIU_JSON_FIXTURE` also selects a fixture. Fixture mode skips credential access and provider requests. Tests use synthetic tokens, temporary homes and local mock servers. CI tests Windows, Linux and macOS, and uploads platform binaries as workflow artifacts. Linux desktop builds need `libxkbcommon-dev`, `libwayland-dev`, `libegl1-mesa-dev`, `libgtk-3-dev`, and `libayatana-appindicator3-dev`; installed Linux systems also need the matching `libayatana-appindicator3-1` runtime library. The panel requires a graphical session and the tray requires an AppIndicator or StatusNotifier host.
 
 This is an unofficial fork of [getparable/aiu](https://github.com/getparable/aiu). Provider endpoints are internal and may change. No telemetry is sent. Manage only accounts you are authorized to use.
 

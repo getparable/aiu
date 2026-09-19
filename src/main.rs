@@ -18,6 +18,10 @@ use std::{
 
 #[cfg(feature = "desktop")]
 mod desktop;
+#[cfg(feature = "desktop")]
+mod desktop_wake;
+#[cfg(feature = "desktop")]
+mod tray;
 
 #[derive(Parser)]
 #[command(
@@ -96,7 +100,7 @@ enum Command {
     Sync,
     /// Identify the active CLI logins.
     Whoami,
-    /// Open the portable desktop panel.
+    /// Open the desktop panel and system tray (close the panel to keep AIU in the tray).
     #[command(alias = "menubar")]
     Gui,
     /// Check for a release; never installs or replaces files.

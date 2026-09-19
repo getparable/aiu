@@ -34,6 +34,9 @@ pub struct ApiResponse {
     pub retry_after: Option<u64>,
 }
 
+/// A cloneable cancellation signal for a browser login wait.
+pub type LoginCancellation = Arc<AtomicBool>;
+
 #[derive(Debug)]
 pub struct LoginRejected(String);
 impl std::fmt::Display for LoginRejected {
@@ -79,7 +82,7 @@ impl Api {
             .headers()
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse().ok());
+            .and_then(parse_retry_after);
         let mut bytes = Vec::new();
         response
             .take((MAX_BODY + 1) as u64)
@@ -565,14 +568,32 @@ impl Api {
 
 impl LoginSession {
     pub fn wait_for_code(&self) -> Result<String> {
+        self.wait_for_code_cancellable(&Arc::new(AtomicBool::new(false)))
+    }
+
+    pub fn wait_for_code_cancellable(&self, cancellation: &LoginCancellation) -> Result<String> {
         if self.manual {
             bail!("manual login requires pasted code")
         }
-        self.receiver
+        let receiver = self
+            .receiver
             .as_ref()
-            .context("login callback unavailable")?
-            .recv_timeout(Duration::from_secs(300))
-            .context("timed out waiting for browser callback")?
+            .context("login callback unavailable")?;
+        loop {
+            if cancellation.load(Ordering::Acquire) {
+                if let Some(cancel) = &self.cancel {
+                    cancel.store(true, Ordering::Release);
+                }
+                bail!("Sign-in cancelled")
+            }
+            match receiver.recv_timeout(Duration::from_millis(100)) {
+                Ok(result) => return result,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    bail!("login callback unavailable")
+                }
+            }
+        }
     }
 }
 
@@ -635,6 +656,7 @@ fn bind_callback(
                     let ok = result.is_ok();
                     let terminal_error = result.as_ref().err().is_some_and(|e| {
                         e.to_string().starts_with("authorization failed:")
+                            || e.to_string() == "Sign-in cancelled"
                             || e.to_string() == "no authorization code"
                     });
                     let body = if ok {
@@ -691,6 +713,9 @@ fn parse_callback(line: &str, path: &str, state: &str) -> Result<String> {
         bail!("authorization state mismatch")
     }
     if let Some((_, e)) = u.query_pairs().find(|(k, _)| k == "error") {
+        if e == "access_denied" {
+            bail!("Sign-in cancelled")
+        }
         bail!("authorization failed: {}", redact(&e))
     }
     u.query_pairs()
@@ -698,6 +723,24 @@ fn parse_callback(line: &str, path: &str, state: &str) -> Result<String> {
         .map(|(_, v)| v.into_owned())
         .filter(|x| !x.is_empty())
         .context("no authorization code")
+}
+
+fn parse_retry_after(value: &str) -> Option<u64> {
+    parse_retry_after_at(value, SystemTime::now())
+}
+
+fn parse_retry_after_at(value: &str, now: SystemTime) -> Option<u64> {
+    let value = value.trim();
+    if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Some(value.parse().unwrap_or(u64::MAX));
+    }
+    let deadline = httpdate::parse_http_date(value).ok()?;
+    let delay = deadline.duration_since(now).unwrap_or_default();
+    Some(
+        delay
+            .as_secs()
+            .saturating_add(u64::from(delay.subsec_nanos() != 0)),
+    )
 }
 fn now_ms() -> i64 {
     SystemTime::now()
@@ -807,6 +850,50 @@ mod tests {
             .unwrap(),
             "ok"
         );
+        assert!(
+            parse_callback(
+                "GET /callback?error=access_denied&state=wrong HTTP/1.1",
+                "/callback",
+                "right"
+            )
+            .is_err()
+        );
+        assert_eq!(
+            parse_callback(
+                "GET /callback?error=access_denied&state=right HTTP/1.1",
+                "/callback",
+                "right"
+            )
+            .unwrap_err()
+            .to_string(),
+            "Sign-in cancelled"
+        );
+    }
+
+    #[test]
+    fn retry_after_accepts_seconds_dates_and_safe_failures() {
+        assert_eq!(parse_retry_after("17"), Some(17));
+        assert_eq!(parse_retry_after("18446744073709551615"), Some(u64::MAX));
+        assert_eq!(parse_retry_after("not-a-retry-value"), None);
+        assert_eq!(parse_retry_after("Thu, 01 Jan 1970 00:00:00 GMT"), Some(0));
+        assert_eq!(
+            parse_retry_after("9999999999999999999999999"),
+            Some(u64::MAX)
+        );
+        assert_eq!(parse_retry_after("+17"), None);
+        let deadline = httpdate::parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT").unwrap();
+        let now = deadline - Duration::from_millis(7_200_500);
+        for date in [
+            "Sun, 06 Nov 1994 08:49:37 GMT",
+            "Sunday, 06-Nov-94 08:49:37 GMT",
+            "Sun Nov  6 08:49:37 1994",
+        ] {
+            assert_eq!(parse_retry_after_at(date, now), Some(7201));
+            assert_eq!(
+                parse_retry_after_at(date, deadline + Duration::from_secs(1)),
+                Some(0)
+            );
+        }
     }
 
     #[test]
@@ -852,6 +939,76 @@ mod tests {
                 .is_err()
         );
         std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+    }
+
+    #[test]
+    fn cancellable_wait_returns_quickly_and_releases_listener_while_session_is_retained() {
+        let (port, receiver, listener_cancel) =
+            bind_callback(0, "/callback", "expected".into()).unwrap();
+        let session = LoginSession {
+            authorize_url: "https://example.test/authorize".into(),
+            manual: false,
+            provider: Provider::Claude,
+            verifier: "verifier".into(),
+            state: "expected".into(),
+            redirect_uri: format!("http://localhost:{port}/callback"),
+            scopes: "user:profile".into(),
+            receiver: Some(receiver),
+            cancel: Some(listener_cancel),
+        };
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let signal = cancellation.clone();
+        let started = Instant::now();
+        let signaler = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            signal.store(true, Ordering::Release);
+        });
+        let result = session.wait_for_code_cancellable(&cancellation);
+        signaler.join().unwrap();
+        assert_eq!(result.unwrap_err().to_string(), "Sign-in cancelled");
+        assert!(started.elapsed() < Duration::from_secs(2));
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", port)) {
+                drop(listener);
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "callback listener was not released"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        drop(session);
+    }
+
+    #[test]
+    fn browser_denial_is_terminal_only_with_matching_state() {
+        let (port, receiver, cancel) = bind_callback(0, "/callback", "expected".into()).unwrap();
+        let mut wrong = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        write!(
+            wrong,
+            "GET /callback?error=access_denied&state=wrong HTTP/1.1\r\nHost: localhost\r\n\r\n"
+        )
+        .unwrap();
+        let mut response = String::new();
+        wrong.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 404"));
+        assert!(receiver.recv_timeout(Duration::from_millis(200)).is_err());
+
+        let mut right = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        write!(
+            right,
+            "GET /callback?error=access_denied&state=expected HTTP/1.1\r\nHost: localhost\r\n\r\n"
+        )
+        .unwrap();
+        let error = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.to_string(), "Sign-in cancelled");
+        cancel.store(true, Ordering::Release);
     }
 
     #[test]

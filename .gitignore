@@ -7,3 +7,5 @@
 /upstream-aiu/
 /aiu-rs.md
 *.pdb
+__pycache__/
+*.pyc
