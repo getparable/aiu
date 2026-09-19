@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string] $BinaryPath = (Join-Path $PSScriptRoot '..\target\debug\aiu.exe'),
-    [int] $TimeoutSeconds = 20
+    [int] $TimeoutSeconds = 20,
+    [switch] $OccludedQuit
 )
 
 $ErrorActionPreference = 'Stop'
@@ -34,6 +35,10 @@ namespace AiuTraySmoke {
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr hwnd, StringBuilder text, int max);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int max);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern IntPtr CreateWindowEx(uint exStyle, string className, string title, uint style, int x, int y, int width, int height, IntPtr parent, IntPtr menu, IntPtr instance, IntPtr param);
+    [DllImport("user32.dll")] public static extern bool UpdateWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern bool DestroyWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] public static extern IntPtr GetMenu(IntPtr hwnd);
@@ -61,6 +66,21 @@ namespace AiuTraySmoke {
       var identifier = new NotifyIconIdentifier { cbSize=Marshal.SizeOf<NotifyIconIdentifier>(), hWnd=hwnd, uID=id };
       Rect rect; return Shell_NotifyIconGetRect(ref identifier, out rect) == 0;
     }
+    public static IntPtr CreateCover(IntPtr panel) {
+      Rect rect;
+      if (!GetWindowRect(panel, out rect)) return IntPtr.Zero;
+      const uint WS_EX_TOOLWINDOW = 0x00000080;
+      const uint WS_EX_TOPMOST = 0x00000008;
+      const uint WS_POPUP = 0x80000000;
+      const uint WS_VISIBLE = 0x10000000;
+      int margin = 2;
+      var cover = CreateWindowEx(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, "STATIC", "AIU smoke cover",
+        WS_POPUP | WS_VISIBLE, rect.left - margin, rect.top - margin,
+        (rect.right - rect.left) + (margin * 2), (rect.bottom - rect.top) + (margin * 2),
+        IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+      if (cover != IntPtr.Zero) UpdateWindow(cover);
+      return cover;
+    }
   }
 }
 '@
@@ -70,6 +90,7 @@ $outLog = Join-Path ([IO.Path]::GetTempPath()) "aiu-tray-$([guid]::NewGuid()).ou
 $errLog = Join-Path ([IO.Path]::GetTempPath()) "aiu-tray-$([guid]::NewGuid()).err.log"
 $process = $null
 $ownedPid = $null
+$cover = [IntPtr]::Zero
 $failed = $true
 
 function Get-AiuWindows { [AiuTraySmoke.Native]::ForProcess($ownedPid) }
@@ -150,6 +171,15 @@ try {
     [AiuTraySmoke.Native]::PostMessage($tray.Hwnd, 0x0111, [IntPtr]$refresh.Id, [IntPtr]::Zero) | Out-Null
     Start-Sleep -Milliseconds 500
     Assert-Aiu (-not (Get-AiuWindows | Where-Object { $_.Visible -and $_.Title -match '^AIU' })) 'Tray Refresh unexpectedly showed the panel.'
+    if ($OccludedQuit) {
+        [AiuTraySmoke.Native]::PostMessage($tray.Hwnd, 0x0111, [IntPtr]$show.Id, [IntPtr]::Zero) | Out-Null
+        Wait-Aiu { $null -ne (Get-AiuWindows | Where-Object { $_.Visible -and $_.Title -match '^AIU' }) } 'Tray Show command did not restore AIU for occlusion test.'
+        $panel = Get-AiuWindows | Where-Object { $_.Visible -and $_.Title -match '^AIU' } | Select-Object -First 1
+        $cover = [AiuTraySmoke.Native]::CreateCover($panel.Hwnd)
+        Assert-Aiu ($cover -ne [IntPtr]::Zero) 'Could not create native occlusion cover.'
+        Assert-Aiu ([AiuTraySmoke.Native]::IsWindowVisible($cover)) 'Native occlusion cover is not visible.'
+        Assert-Aiu ($null -ne (Get-AiuWindows | Where-Object { $_.Visible -and $_.Title -match '^AIU' })) 'AIU panel disappeared under occlusion cover.'
+    }
     [AiuTraySmoke.Native]::PostMessage($tray.Hwnd, 0x0111, [IntPtr]$quit.Id, [IntPtr]::Zero) | Out-Null
     Wait-Aiu { $process.HasExited } 'Tray menu Quit did not exit AIU.'
     $failed = $false
@@ -160,6 +190,7 @@ try {
     if ($errLog -and (Test-Path $errLog)) { Write-Host (Get-Content $errLog -Raw) }
     throw
 } finally {
+    if ($cover -ne [IntPtr]::Zero) { [AiuTraySmoke.Native]::DestroyWindow($cover) | Out-Null }
     if ($failed -and $process -and -not $process.HasExited -and $ownedPid -and (Get-Process -Id $ownedPid -ErrorAction SilentlyContinue)) {
         Stop-Process -Id $ownedPid -Force -ErrorAction SilentlyContinue
     }

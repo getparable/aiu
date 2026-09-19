@@ -56,20 +56,17 @@ impl Wake {
             return;
         }
         let hwnd = *handle as windows_sys::Win32::Foundation::HWND;
-        // Winit's normal redraw request does not deliver WM_PAINT to hidden
-        // windows. Post it explicitly to process tray actions and refreshes.
+        // Winit's normal redraw request can miss hidden or fully occluded
+        // windows. Post it explicitly, including for nominally visible windows,
+        // to process tray actions and refreshes while another app covers AIU.
         // This handle comes from eframe and is invalidated before its owner exits.
         unsafe {
-            if windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible(hwnd) == 0
-                || windows_sys::Win32::UI::WindowsAndMessaging::IsIconic(hwnd) != 0
-            {
-                let _ = windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
-                    hwnd,
-                    windows_sys::Win32::UI::WindowsAndMessaging::WM_PAINT,
-                    0,
-                    0,
-                );
-            }
+            let _ = windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
+                hwnd,
+                windows_sys::Win32::UI::WindowsAndMessaging::WM_PAINT,
+                0,
+                0,
+            );
         }
     }
 }
