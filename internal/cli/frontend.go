@@ -48,6 +48,16 @@ func runFrontend(opts *options, cfg *core.Config, in io.Reader, out io.Writer) i
 		emit(frontendEvent{Event: "result", Error: &frontendError{Code: "unsupported_version", Message: "frontend contract version is unsupported"}})
 		return 2
 	}
+	// Informational flags must never start the requested mutation. Keep these
+	// responses inside the JSONL contract instead of printing terminal help.
+	if opts.version {
+		emit(frontendEvent{Event: "result", OK: true, Message: "aiu " + core.Version})
+		return 0
+	}
+	if opts.help {
+		emit(frontendEvent{Event: "result", OK: true, Message: "aiu frontend <status|add|login|switch|remove|sync> --contract-version 1; keep stdin open and send {\"cancel\":true} to cancel"})
+		return 0
+	}
 	if len(opts.args) == 0 {
 		emit(frontendEvent{Event: "result", Error: &frontendError{Code: "invalid_command", Message: "frontend needs a command"}})
 		return 2
@@ -120,7 +130,7 @@ func runFrontend(opts *options, cfg *core.Config, in io.Reader, out io.Writer) i
 func watchFrontendInput(in io.Reader, cancel func(), failures chan<- error) {
 	s := bufio.NewScanner(in)
 	s.Buffer(make([]byte, 1024), 8192)
-	for s.Scan() {
+	if s.Scan() {
 		var msg struct {
 			Cancel  bool `json:"cancel"`
 			Version *int `json:"version"`

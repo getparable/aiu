@@ -36,6 +36,9 @@ are `invalid_command`, `invalid_input`, `unsupported_version`, `operation_failed
 and `cancelled`. Exit statuses are 0 (success), 1 (operation failed), 2 (invalid
 request/version), and 130 (cancelled).
 
+`--help` and `--version`, including their short forms, return a successful
+informational result after `hello` without executing the requested command.
+
 Successful status returns `accounts: []` for an empty store. Rows are the existing
 `aiu --json` shape; `windows[].known` is an additive boolean distinguishing an
 unknown percentage from zero. The frontend displays Go's `recommended`, `why`,

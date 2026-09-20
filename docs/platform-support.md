@@ -97,8 +97,8 @@ Ctrl+C ends browser callback waits and manual input waits. Once a token exchange
 has begun, the CLI gives it and account persistence a bounded opportunity to finish
 before exiting, so cancellation does not discard an otherwise successful issued
 login. Provider/storage failures and abrupt process termination are separate cases;
-#10's credential-recovery follow-up remains necessary. This console behavior is
-not yet the frontend cancellation protocol planned for the Rust adapter.
+#10's credential-recovery follow-up remains necessary. Desktop clients use the
+[frontend cancellation protocol](frontend-contract.md) to cancel through stdin.
 
 Run `go test ./...` natively on Windows and Linux. Tests use temporary directories,
 synthetic credentials, and loopback HTTP servers; no provider login is required.
