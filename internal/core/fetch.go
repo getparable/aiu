@@ -25,6 +25,13 @@ func (c *Config) ensureFresh(ctx context.Context, r *Record, _ *LiveClaude, _ *L
 	if r.RefreshToken == "" {
 		return nil, errors.New("no refresh token stored; sign in again for this account")
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// A frontend may cancel while the provider is rotating this single-use
+	// credential. Finish receiving and saving that response before exiting.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+	defer cancel()
 	spent := r.RefreshToken
 	next := *r
 	if r.Provider == Codex {
@@ -50,6 +57,9 @@ func (c *Config) ensureFresh(ctx context.Context, r *Record, _ *LiveClaude, _ *L
 		}
 	}
 	next.UpdatedAt = c.now().UnixMilli()
+	if err := c.tokenSet(next.StoreKey(), &next); err != nil {
+		return nil, fmt.Errorf("refreshed %s but could not store the new token: %w", r.Email, err)
+	}
 	switch {
 	case r.Provider == Claude:
 		if _, err := c.handBackClaude(spent, &next); err != nil {
@@ -59,9 +69,6 @@ func (c *Config) ensureFresh(ctx context.Context, r *Record, _ *LiveClaude, _ *L
 		if _, err := c.handBackCodex(spent, &next); err != nil {
 			c.Warn(fmt.Sprintf("refreshed %s but could not update Codex's auth.json: %v", r.Email, err))
 		}
-	}
-	if err := c.tokenSet(next.StoreKey(), &next); err != nil {
-		return nil, fmt.Errorf("refreshed %s but could not store the new token: %w", r.Email, err)
 	}
 	return &next, nil
 }
@@ -266,6 +273,9 @@ func (c *Config) fetchUsage(ctx context.Context, r *Record, liveClaude *LiveClau
 	key := r.StoreKey()
 	var g gate
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		var err error
 		g, err = c.claimFetchSlot(key, r.UpdatedAt)
 		if errors.Is(err, errLocked) {
@@ -481,6 +491,9 @@ func (c *Config) Collect(ctx context.Context, opts CollectOptions) (*Snapshot, e
 		}()
 	}
 	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	snap.Results = results
 	return snap, nil
 }

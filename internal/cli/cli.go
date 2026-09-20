@@ -17,25 +17,26 @@ import (
 )
 
 type options struct {
-	command  string
-	args     []string
-	json     bool
-	provider core.Provider
-	label    string
-	interval int
-	sortMode string
-	noSync   bool
-	readOnly bool
-	manual   bool
-	console  bool
-	noOpen   bool
-	noColor  bool
-	force    bool
-	help     bool
-	version  bool
+	command         string
+	args            []string
+	json            bool
+	provider        core.Provider
+	label           string
+	interval        int
+	sortMode        string
+	noSync          bool
+	readOnly        bool
+	manual          bool
+	console         bool
+	noOpen          bool
+	noColor         bool
+	force           bool
+	contractVersion string
+	help            bool
+	version         bool
 }
 
-var valueFlags = map[string]bool{"label": true, "interval": true, "sort": true, "provider": true}
+var valueFlags = map[string]bool{"label": true, "interval": true, "sort": true, "provider": true, "contract-version": true}
 
 func parse(argv []string) (*options, error) {
 	o := &options{}
@@ -62,6 +63,8 @@ func parse(argv []string) (*options, error) {
 			value = argv[i]
 		}
 		switch key {
+		case "contract-version":
+			o.contractVersion = value
 		case "json":
 			o.json = true
 		case "codex", "claude":
@@ -129,8 +132,17 @@ func Run(argv []string) int {
 func run(argv []string, cfg *core.Config) int {
 	opts, err := parse(argv)
 	if err != nil {
+		if len(argv) > 0 && argv[0] == "frontend" {
+			enc := json.NewEncoder(os.Stdout)
+			_ = enc.Encode(frontendEvent{Version: 1, Event: "hello", Capabilities: frontendCapabilities})
+			_ = enc.Encode(frontendEvent{Version: 1, Event: "result", Error: &frontendError{Code: "invalid_input", Message: "invalid frontend arguments"}})
+			return 2
+		}
 		fmt.Fprintln(os.Stderr, "error: "+err.Error())
 		return 2
+	}
+	if opts.command == "frontend" {
+		return runFrontend(opts, cfg, os.Stdin, os.Stdout)
 	}
 	colour := !opts.noColor && os.Getenv("NO_COLOR") == "" && isTerminal(os.Stdout)
 	a := &app{cfg: cfg, opts: opts, p: painter{on: colour}, stdout: os.Stdout, stderr: os.Stderr}
@@ -150,8 +162,8 @@ func run(argv []string, cfg *core.Config) int {
 		"sync": a.sync, "switch": a.switchTo, "use": a.switchTo, "whoami": a.whoami,
 		"link":    a.link,
 		"update":  a.update,
-		"menubar": a.menuBar,
-		"help":    func(context.Context) error { a.help(); return nil },
+		"menubar": a.menuBar, "gui": a.menuBar,
+		"help": func(context.Context) error { a.help(); return nil },
 	}
 	handler, ok := commands[opts.command]
 	if opts.help || !ok {
@@ -531,7 +543,7 @@ func (a *app) help() {
   aiu list | remove <email|label> | sync | whoami
   aiu link [install|remove|status]                    add or drop the ~/.local/bin/aiu shortcut
   aiu update [--force]                                is there a newer release? (never installs)
-  aiu menubar                                         open the menu bar app (AIU.app)
+  aiu gui | menubar                                    open the bundled desktop app
 
 %s
   Every command takes --codex (or --provider codex) to act on Codex instead:

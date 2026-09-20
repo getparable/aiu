@@ -67,6 +67,7 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go test -race ./...
+      - run: make test-contract
       - run: make app BIN_ARCH=universal
       - run: lipo build/AIU.app/Contents/MacOS/aiu -verify_arch arm64 && lipo build/AIU.app/Contents/MacOS/aiu -verify_arch x86_64
       - run: lipo build/AIU.app/Contents/MacOS/AIUBar -verify_arch arm64 && lipo build/AIU.app/Contents/MacOS/AIUBar -verify_arch x86_64

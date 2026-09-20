@@ -125,6 +125,14 @@ func (c *Config) CaptureClaudeCode(ctx context.Context, label string) (*SavedAcc
 		}
 	}
 	if working.IsExpired(c.now(), refreshMargin) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		// Once rotation starts, a cancelled frontend must wait for its replacement
+		// to be handed back and stored, just as it does for browser login.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+		defer cancel()
 		spent := working.RefreshToken
 		fresh, err := c.refreshClaude(ctx, working.RefreshToken)
 		if err != nil {
@@ -159,6 +167,12 @@ func (c *Config) CaptureCodex(ctx context.Context, label string) (*SavedAccount,
 	}
 	working := codexRecordFromLive(live)
 	if working.IsExpired(c.now(), refreshMargin) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+		defer cancel()
 		spent := working.RefreshToken
 		fresh, err := c.refreshCodex(ctx, working)
 		if err != nil {

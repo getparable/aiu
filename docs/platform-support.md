@@ -1,10 +1,12 @@
-# Windows and Linux CLI support
+# Cross-platform Go CLI and frontend support
 
-This implements the first milestone of [#10](https://github.com/getparable/aiu/issues/10).
+This implements the portable Go backend and frontend contract from [#10](https://github.com/getparable/aiu/issues/10).
 Go owns account management, credentials, OAuth, usage, caching, and recommendations
 on every platform. The existing SwiftUI app, macOS paths, status JSON, and
-Homebrew workflow remain unchanged. The Rust desktop adapter and its process
-contract are subsequent milestones, not dependencies of these CLI archives.
+Homebrew workflow remain unchanged. The Rust desktop is maintained and released
+in its own repository, [krflol/aiu-desktop](https://github.com/krflol/aiu-desktop).
+It bundles this Go backend and uses the [versioned frontend contract](frontend-contract.md);
+Go/Swift CI and releases do not depend on Rust.
 
 ## Build and download
 
@@ -16,8 +18,10 @@ go build -o aiu ./cmd/aiu
 ```
 
 On Windows, use `go build -o aiu.exe ./cmd/aiu`. Native Windows is supported
-independently of WSL. `aiu menubar` remains macOS-only; on Windows/Linux use
-`aiu watch` until the desktop adapter is available.
+independently of WSL. `aiu gui` (also `menubar`) opens AIU.app on macOS. On
+Windows/Linux it launches `aiu-desktop` beside the Go executable; CLI-only
+archives explain that the separate desktop bundle is needed. Headless users can
+continue to use `aiu watch`.
 
 The CI workflow provides downloadable CLI artifacts. After a maintainer publishes
 a release, the CLI workflow tests and attaches these archives to that same
