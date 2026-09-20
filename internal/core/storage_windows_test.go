@@ -11,9 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 func TestDPAPIStoreRoundTripAndCiphertext(t *testing.T) {
@@ -174,9 +174,17 @@ func assertCurrentUserOnlyACL(t *testing.T, path string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := sd.String()
-	if control&windows.SE_DACL_PROTECTED == 0 || strings.Count(s, "(") != 1 || !strings.Contains(s, ";;;"+user.User.Sid.String()+")") {
-		t.Fatalf("expected only the current user's protected ACE for %s: %s", filepath.Base(path), s)
+	dacl, _, err := sd.DACL()
+	if err != nil || dacl == nil || dacl.AceCount != 1 {
+		t.Fatalf("expected one current-user ACE: %s (%v)", sd.String(), err)
+	}
+	var ace *windows.ACCESS_ALLOWED_ACE
+	if err := windows.GetAce(dacl, 0, &ace); err != nil {
+		t.Fatal(err)
+	}
+	sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+	if control&windows.SE_DACL_PROTECTED == 0 || ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || !sid.Equals(user.User.Sid) {
+		t.Fatalf("expected only the current user's protected ACE for %s: %s", filepath.Base(path), sd.String())
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unsafe"
 )
 
 func TestReplacementFailureLeavesOriginalAndCleansTemp(t *testing.T) {
@@ -86,7 +87,16 @@ func TestReplacementPreservesProtectedExternalACL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if control&windows.SE_DACL_PROTECTED == 0 || !strings.Contains(after.String(), userSID) {
+	actualACL, _, err := after.DACL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var firstACE *windows.ACCESS_ALLOWED_ACE
+	if err := windows.GetAce(actualACL, 0, &firstACE); err != nil {
+		t.Fatal(err)
+	}
+	actualSID := (*windows.SID)(unsafe.Pointer(&firstACE.SidStart))
+	if control&windows.SE_DACL_PROTECTED == 0 || !actualSID.Equals(tokenUser.User.Sid) {
 		t.Fatalf("replacement ACL is not protected for current user: %s", after.String())
 	}
 }

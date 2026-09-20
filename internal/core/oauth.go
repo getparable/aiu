@@ -478,10 +478,11 @@ type callbackResult struct {
 }
 
 type callbackServer struct {
-	port   int
-	server *http.Server
-	result chan callbackResult
-	once   sync.Once
+	port     int
+	listener net.Listener
+	server   *http.Server
+	result   chan callbackResult
+	once     sync.Once
 }
 
 // The callback page is served to a browser: no scripts, no embedding, and no caching
@@ -502,7 +503,7 @@ func listenCallback(port int, expectedState, path string, provider Provider) (*c
 	if err != nil {
 		return nil, err
 	}
-	cb := &callbackServer{port: ln.Addr().(*net.TCPAddr).Port, result: make(chan callbackResult, 1)}
+	cb := &callbackServer{port: ln.Addr().(*net.TCPAddr).Port, listener: ln, result: make(chan callbackResult, 1)}
 	page := func(w http.ResponseWriter, status int, kind pageKind, title, detail string) {
 		for k, v := range callbackHeaders {
 			w.Header().Set(k, v)
@@ -552,6 +553,9 @@ func (cb *callbackServer) close(err error)    { cb.settle(callbackResult{err: er
 
 func (cb *callbackServer) settle(res callbackResult) {
 	cb.once.Do(func() {
+		// Shutdown only knows listeners already registered by Serve. A user can
+		// cancel before that goroutine starts, so close our reserved socket too.
+		_ = cb.listener.Close()
 		cb.result <- res
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()

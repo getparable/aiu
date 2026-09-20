@@ -34,6 +34,21 @@ func TestLoginCancellationClosesCallbackListener(t *testing.T) {
 	ln.Close()
 }
 
+func TestCancelBeforeCallbackServeStarts(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	cb := &callbackServer{listener: ln, server: &http.Server{}, result: make(chan callbackResult, 1)}
+	cb.close(context.Canceled)
+	probe, err := net.Listen("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("cancellation left the unserved listener open: %v", err)
+	}
+	probe.Close()
+}
+
 func TestBrowserDenialEndsLoginWait(t *testing.T) {
 	cb, err := listenCallback(0, "synthetic-state", callbackPath, Claude)
 	if err != nil {
