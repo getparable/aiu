@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -313,7 +314,7 @@ func TestSwitchClaudeKeepsBothAccounts(t *testing.T) {
 	if global["numStartups"] != float64(3) || obj(global["oauthAccount"])["emailAddress"] != "a@example.com" {
 		t.Fatalf(".claude.json = %v", global)
 	}
-	if st, _ := os.Stat(c.ClaudeGlobalConfig); st.Mode().Perm() != 0o644 {
+	if st, _ := os.Stat(c.ClaudeGlobalConfig); runtime.GOOS != "windows" && st.Mode().Perm() != 0o644 {
 		t.Errorf(".claude.json mode changed to %v", st.Mode().Perm())
 	}
 

@@ -14,8 +14,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os/exec"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -426,8 +424,16 @@ func (s *LoginSession) WaitForCode(ctx context.Context) (string, error) {
 	}
 }
 
-// CompleteLogin exchanges the code and stores the account.
+// CompleteLogin exchanges the code and stores the account. Cancellation before
+// the exchange begins stops login. Once begun, give the exchange and persistence
+// a bounded opportunity to finish: Ctrl+C must not discard credentials already
+// issued by the provider. Abrupt process termination cannot offer this guarantee.
 func (c *Config) CompleteLogin(ctx context.Context, s *LoginSession, code, label string) (*SavedAccount, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+	defer cancel()
 	if s.Provider == Codex {
 		body, err := c.exchangeCodexCode(ctx, strings.TrimSpace(code), s.verifier, s.redirectURI)
 		if err != nil {
@@ -449,7 +455,7 @@ func safeEqual(a, b string) bool {
 // OpenBrowser hands the browser only https URLs on the hosts we build logins for.
 func (c *Config) OpenBrowser(rawURL string) bool {
 	u, err := url.Parse(rawURL)
-	if err != nil || u.Scheme != "https" || strings.ContainsAny(rawURL, "\"\r\n\x00") {
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || strings.ContainsAny(rawURL, "\"") || strings.IndexFunc(rawURL, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
 		return false
 	}
 	allowed := false
@@ -461,11 +467,7 @@ func (c *Config) OpenBrowser(rawURL string) bool {
 	if !allowed {
 		return false
 	}
-	bin := "xdg-open"
-	if runtime.GOOS == "darwin" {
-		bin = "/usr/bin/open"
-	}
-	return exec.Command(bin, rawURL).Start() == nil
+	return openBrowser(rawURL)
 }
 
 // ---------------------------------------------------------------- callback server

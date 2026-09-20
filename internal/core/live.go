@@ -243,27 +243,10 @@ func (c *Config) updateClaudeGlobalAccount(profile map[string]any) (bool, error)
 	if err != nil {
 		return false, err
 	}
-	mode := os.FileMode(0o600)
-	if st, err := os.Stat(c.ClaudeGlobalConfig); err == nil {
-		mode = st.Mode().Perm()
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(c.ClaudeGlobalConfig), ".claude.json.*.tmp")
-	if err != nil {
+	if err := writeAtomicFile(c.ClaudeGlobalConfig, out, false, true); err != nil {
 		return false, err
 	}
-	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(mode); err != nil {
-		tmp.Close()
-		return false, err
-	}
-	if _, err := tmp.Write(out); err != nil {
-		tmp.Close()
-		return false, err
-	}
-	if err := tmp.Close(); err != nil {
-		return false, err
-	}
-	return true, os.Rename(tmp.Name(), c.ClaudeGlobalConfig)
+	return true, nil
 }
 
 // ---------------------------------------------------------------- codex

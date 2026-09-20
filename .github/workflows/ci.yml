@@ -24,6 +24,39 @@ jobs:
       - run: go test -race ./...
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
+  windows:
+    name: Windows Go tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go mod verify
+      - run: go vet ./...
+      - run: go test ./...
+      - run: go build -o aiu.exe ./cmd/aiu
+
+  cli-artifacts:
+    name: CLI release-shaped artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: python3 scripts/package-cli.py --output dist
+      - name: Verify checksums
+        working-directory: dist
+        run: sha256sum --check *-checksums.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: aiu-cli-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+
   macos:
     name: macOS app build
     runs-on: xcode-27

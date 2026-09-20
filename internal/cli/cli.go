@@ -2,14 +2,12 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strconv"
 	"strings"
@@ -125,13 +123,17 @@ type app struct {
 
 // Run executes argv and returns the process exit code.
 func Run(argv []string) int {
+	return run(argv, core.DefaultConfig())
+}
+
+func run(argv []string, cfg *core.Config) int {
 	opts, err := parse(argv)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error: "+err.Error())
 		return 2
 	}
 	colour := !opts.noColor && os.Getenv("NO_COLOR") == "" && isTerminal(os.Stdout)
-	a := &app{cfg: core.DefaultConfig(), opts: opts, p: painter{on: colour}, stdout: os.Stdout, stderr: os.Stderr}
+	a := &app{cfg: cfg, opts: opts, p: painter{on: colour}, stdout: os.Stdout, stderr: os.Stderr}
 	a.cfg.Warn = func(m string) { fmt.Fprintln(a.stderr, a.p.yellow("warn: "+core.Redact(m))) }
 	a.cfg.Info = func(m string) {
 		if !opts.json {
@@ -302,7 +304,10 @@ func (a *app) login(ctx context.Context) error {
 			a.cfg.OpenBrowser(s.AuthorizeURL)
 		}
 		fmt.Fprint(a.stdout, "paste the authorization code shown after approving: ")
-		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		line, err := readLoginCode(ctx, os.Stdin)
+		if err != nil {
+			return err
+		}
 		if code = strings.TrimSpace(line); code == "" {
 			return errors.New("no code entered")
 		}
@@ -507,8 +512,8 @@ func (a *app) switchTo(ctx context.Context) error {
 
 // menuBar opens the installed AIU.app, which draws the panel and calls this binary.
 func (a *app) menuBar(context.Context) error {
-	if err := exec.Command("/usr/bin/open", "-a", "AIU").Run(); err != nil {
-		return errors.New("AIU.app is not installed — run `make install` in the aiu repo")
+	if err := openMenuBar(); err != nil {
+		return err
 	}
 	return nil
 }

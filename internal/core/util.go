@@ -57,33 +57,40 @@ func DisplayWidth(text string) int {
 	return n
 }
 
-// writePrivateFile writes owner-only and atomically. ownDir tightens the directory
-// too; another tool's directory (~/.claude, ~/.codex) keeps its own mode.
+// writePrivateFile restricts AIU-owned directories and files. External CLI
+// directories keep their permissions; existing Windows file ACLs are retained.
 func writePrivateFile(path string, data []byte, ownDir bool) error {
+	return writeAtomicFile(path, data, ownDir, false)
+}
+
+// preserveMode is used only for the external .claude.json settings file. Unix
+// credential files continue to be owner-only, even if an old file was broader.
+func writeAtomicFile(path string, data []byte, ownDir, preserveMode bool) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	if ownDir {
-		_ = os.Chmod(dir, 0o700)
+		if err := securePrivateDir(dir); err != nil {
+			return err
+		}
 	}
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
+	tmp, err := createPrivateTemp(path, ownDir, preserveMode)
 	if err != nil {
 		return err
 	}
 	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
+	defer tmp.Close()
+	if _, err := tmp.Write(data); err != nil {
 		return err
 	}
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+	if err := tmp.Sync(); err != nil {
 		return err
 	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	return replacePrivateFile(tmp.Name(), path)
 }
 
 func writePrivateJSON(path string, v any) error {

@@ -12,6 +12,9 @@ Rate limits and reset times for several **Claude** (Pro/Max) and **ChatGPT/Codex
 
 ## Install
 
+Windows and Linux standalone CLI downloads, storage behavior, and the manual smoke
+checklist are documented in [Platform support](docs/platform-support.md).
+
 ```sh
 brew install getparable/tap/aiu
 ```

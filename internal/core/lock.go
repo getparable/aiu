@@ -4,12 +4,17 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 )
 
 // withFileLock serializes read/modify/write operations between AIU processes.
+var errLockTimeout = errors.New("credential store is locked by another process")
+
 func withFileLock(path string, fn func() error) error {
+	return withFileLockTimeout(path, lockWait, fn)
+}
+
+func withFileLockTimeout(path string, wait time.Duration, fn func() error) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -18,20 +23,19 @@ func withFileLock(path string, fn func() error) error {
 		return err
 	}
 	defer f.Close()
-	deadline := time.Now().Add(lockWait)
+	deadline := time.Now().Add(wait)
 	for {
-		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		err = tryPlatformLock(f)
 		if err == nil {
-			break
+			defer unlockPlatformLock(f)
+			return fn()
 		}
-		if !errors.Is(err, syscall.EWOULDBLOCK) {
+		if !isLockContended(err) {
 			return err
 		}
 		if time.Now().After(deadline) {
-			return errors.New("credential store is locked by another process")
+			return errLockTimeout
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-	return fn()
 }
