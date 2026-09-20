@@ -14,8 +14,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os/exec"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -426,8 +424,16 @@ func (s *LoginSession) WaitForCode(ctx context.Context) (string, error) {
 	}
 }
 
-// CompleteLogin exchanges the code and stores the account.
+// CompleteLogin exchanges the code and stores the account. Cancellation before
+// the exchange begins stops login. Once begun, give the exchange and persistence
+// a bounded opportunity to finish: Ctrl+C must not discard credentials already
+// issued by the provider. Abrupt process termination cannot offer this guarantee.
 func (c *Config) CompleteLogin(ctx context.Context, s *LoginSession, code, label string) (*SavedAccount, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+	defer cancel()
 	if s.Provider == Codex {
 		body, err := c.exchangeCodexCode(ctx, strings.TrimSpace(code), s.verifier, s.redirectURI)
 		if err != nil {
@@ -449,7 +455,7 @@ func safeEqual(a, b string) bool {
 // OpenBrowser hands the browser only https URLs on the hosts we build logins for.
 func (c *Config) OpenBrowser(rawURL string) bool {
 	u, err := url.Parse(rawURL)
-	if err != nil || u.Scheme != "https" || strings.ContainsAny(rawURL, "\"\r\n\x00") {
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || strings.ContainsAny(rawURL, "\"") || strings.IndexFunc(rawURL, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
 		return false
 	}
 	allowed := false
@@ -461,11 +467,7 @@ func (c *Config) OpenBrowser(rawURL string) bool {
 	if !allowed {
 		return false
 	}
-	bin := "xdg-open"
-	if runtime.GOOS == "darwin" {
-		bin = "/usr/bin/open"
-	}
-	return exec.Command(bin, rawURL).Start() == nil
+	return openBrowser(rawURL)
 }
 
 // ---------------------------------------------------------------- callback server
@@ -476,10 +478,11 @@ type callbackResult struct {
 }
 
 type callbackServer struct {
-	port   int
-	server *http.Server
-	result chan callbackResult
-	once   sync.Once
+	port     int
+	listener net.Listener
+	server   *http.Server
+	result   chan callbackResult
+	once     sync.Once
 }
 
 // The callback page is served to a browser: no scripts, no embedding, and no caching
@@ -500,7 +503,7 @@ func listenCallback(port int, expectedState, path string, provider Provider) (*c
 	if err != nil {
 		return nil, err
 	}
-	cb := &callbackServer{port: ln.Addr().(*net.TCPAddr).Port, result: make(chan callbackResult, 1)}
+	cb := &callbackServer{port: ln.Addr().(*net.TCPAddr).Port, listener: ln, result: make(chan callbackResult, 1)}
 	page := func(w http.ResponseWriter, status int, kind pageKind, title, detail string) {
 		for k, v := range callbackHeaders {
 			w.Header().Set(k, v)
@@ -550,6 +553,9 @@ func (cb *callbackServer) close(err error)    { cb.settle(callbackResult{err: er
 
 func (cb *callbackServer) settle(res callbackResult) {
 	cb.once.Do(func() {
+		// Shutdown only knows listeners already registered by Serve. A user can
+		// cancel before that goroutine starts, so close our reserved socket too.
+		_ = cb.listener.Close()
 		cb.result <- res
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()

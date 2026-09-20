@@ -109,6 +109,7 @@ const (
 type Config struct {
 	Dir          string // index, cache, lock (and tokens.json with the file store)
 	UseKeychain  bool
+	UseDPAPI     bool   // Windows user-bound encryption for AIU's own token copies
 	StoreService string // keychain service for our own token copies
 
 	ClaudeDir          string // Claude Code's config dir (.credentials.json lives here off macOS)
@@ -137,8 +138,9 @@ type Config struct {
 func DefaultConfig() *Config {
 	home, _ := os.UserHomeDir()
 	c := &Config{
-		Dir:          envOr("AIU_CONFIG_DIR", filepath.Join(home, ".config", "aiu")),
+		Dir:          envOr("AIU_CONFIG_DIR", defaultConfigDir(home)),
 		UseKeychain:  runtime.GOOS == "darwin" && os.Getenv("AIU_STORE") != "file",
+		UseDPAPI:     runtime.GOOS == "windows" && os.Getenv("AIU_STORE") != "file",
 		StoreService: "aiu",
 
 		CodexHome: envOr("CODEX_HOME", filepath.Join(home, ".codex")),
@@ -205,6 +207,9 @@ func (c *Config) codexAuthFile() string {
 func (c *Config) StorageDescription() string {
 	if c.UseKeychain {
 		return `macOS Keychain (service "` + c.StoreService + `")`
+	}
+	if c.UseDPAPI {
+		return "Windows DPAPI (current user), " + filepath.Join(c.Dir, "tokens.dpapi")
 	}
 	return c.fileStore()
 }

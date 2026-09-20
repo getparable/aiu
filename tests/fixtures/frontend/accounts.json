@@ -1,0 +1,115 @@
+[
+  {
+    "provider": "claude",
+    "email": "work@example.test",
+    "label": "Work",
+    "org": "org-work",
+    "orgName": "Example Team",
+    "active": true,
+    "tier": "max",
+    "subscriptionType": "max",
+    "tokenExpiresAt": "2030-01-01T01:00:00Z",
+    "login": {
+      "state": "unknown",
+      "message": "login lifetime unknown"
+    },
+    "readOnly": false,
+    "canSwitch": true,
+    "windows": [
+      {
+        "key": "five_hour",
+        "group": "session",
+        "label": "5h session",
+        "percent": 12,
+        "known": true,
+        "resetsAt": "2030-01-01T05:00:00Z"
+      },
+      {
+        "key": "seven_day",
+        "group": "weekly",
+        "label": "7d all",
+        "percent": 23,
+        "known": true,
+        "resetsAt": "2030-01-07T00:00:00Z"
+      }
+    ],
+    "usage": {
+      "five_hour": {
+        "utilization": 12,
+        "resets_at": "2030-01-01T05:00:00Z"
+      },
+      "seven_day": {
+        "utilization": 23,
+        "resets_at": "2030-01-07T00:00:00Z"
+      }
+    },
+    "fetchedAt": "2030-01-01T00:00:00Z",
+    "rank": 0,
+    "note": "77% left",
+    "recommended": true,
+    "why": "77% of the week left · max"
+  },
+  {
+    "provider": "codex",
+    "email": "personal@example.test",
+    "label": "Personal",
+    "org": "org-personal",
+    "active": false,
+    "tier": "ChatGPT Plus",
+    "planType": "plus",
+    "login": {
+      "state": "missing",
+      "message": "no stored token — sign in again"
+    },
+    "readOnly": false,
+    "canSwitch": false,
+    "windows": [],
+    "usage": null,
+    "error": "no stored token",
+    "rank": 0,
+    "note": "unavailable"
+  },
+  {
+    "provider": "claude",
+    "email": "view@example.test",
+    "label": "Read only",
+    "active": false,
+    "login": {
+      "state": "unknown",
+      "message": "login lifetime unknown"
+    },
+    "readOnly": true,
+    "canSwitch": false,
+    "windows": [
+      {
+        "key": "five_hour",
+        "group": "session",
+        "label": "5h session",
+        "percent": 0,
+        "known": false,
+        "severity": "locked"
+      },
+      {
+        "key": "seven_day",
+        "group": "weekly",
+        "label": "7d all",
+        "percent": 75,
+        "known": true,
+        "severity": "warning"
+      }
+    ],
+    "usage": {
+      "five_hour": {
+        "utilization": null,
+        "locked_reason": "restricted"
+      },
+      "seven_day": {
+        "utilization": 75
+      }
+    },
+    "stale": "showing the last known values",
+    "fetchedAt": "2029-12-31T23:00:00Z",
+    "rank": 1,
+    "note": "read-only"
+  }
+]

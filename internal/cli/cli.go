@@ -2,14 +2,12 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strconv"
 	"strings"
@@ -19,25 +17,26 @@ import (
 )
 
 type options struct {
-	command  string
-	args     []string
-	json     bool
-	provider core.Provider
-	label    string
-	interval int
-	sortMode string
-	noSync   bool
-	readOnly bool
-	manual   bool
-	console  bool
-	noOpen   bool
-	noColor  bool
-	force    bool
-	help     bool
-	version  bool
+	command         string
+	args            []string
+	json            bool
+	provider        core.Provider
+	label           string
+	interval        int
+	sortMode        string
+	noSync          bool
+	readOnly        bool
+	manual          bool
+	console         bool
+	noOpen          bool
+	noColor         bool
+	force           bool
+	contractVersion string
+	help            bool
+	version         bool
 }
 
-var valueFlags = map[string]bool{"label": true, "interval": true, "sort": true, "provider": true}
+var valueFlags = map[string]bool{"label": true, "interval": true, "sort": true, "provider": true, "contract-version": true}
 
 func parse(argv []string) (*options, error) {
 	o := &options{}
@@ -64,6 +63,8 @@ func parse(argv []string) (*options, error) {
 			value = argv[i]
 		}
 		switch key {
+		case "contract-version":
+			o.contractVersion = value
 		case "json":
 			o.json = true
 		case "codex", "claude":
@@ -125,13 +126,26 @@ type app struct {
 
 // Run executes argv and returns the process exit code.
 func Run(argv []string) int {
+	return run(argv, core.DefaultConfig())
+}
+
+func run(argv []string, cfg *core.Config) int {
 	opts, err := parse(argv)
 	if err != nil {
+		if len(argv) > 0 && argv[0] == "frontend" {
+			enc := json.NewEncoder(os.Stdout)
+			_ = enc.Encode(frontendEvent{Version: 1, Event: "hello", Capabilities: frontendCapabilities})
+			_ = enc.Encode(frontendEvent{Version: 1, Event: "result", Error: &frontendError{Code: "invalid_input", Message: "invalid frontend arguments"}})
+			return 2
+		}
 		fmt.Fprintln(os.Stderr, "error: "+err.Error())
 		return 2
 	}
+	if opts.command == "frontend" {
+		return runFrontend(opts, cfg, os.Stdin, os.Stdout)
+	}
 	colour := !opts.noColor && os.Getenv("NO_COLOR") == "" && isTerminal(os.Stdout)
-	a := &app{cfg: core.DefaultConfig(), opts: opts, p: painter{on: colour}, stdout: os.Stdout, stderr: os.Stderr}
+	a := &app{cfg: cfg, opts: opts, p: painter{on: colour}, stdout: os.Stdout, stderr: os.Stderr}
 	a.cfg.Warn = func(m string) { fmt.Fprintln(a.stderr, a.p.yellow("warn: "+core.Redact(m))) }
 	a.cfg.Info = func(m string) {
 		if !opts.json {
@@ -148,8 +162,8 @@ func Run(argv []string) int {
 		"sync": a.sync, "switch": a.switchTo, "use": a.switchTo, "whoami": a.whoami,
 		"link":    a.link,
 		"update":  a.update,
-		"menubar": a.menuBar,
-		"help":    func(context.Context) error { a.help(); return nil },
+		"menubar": a.menuBar, "gui": a.menuBar,
+		"help": func(context.Context) error { a.help(); return nil },
 	}
 	handler, ok := commands[opts.command]
 	if opts.help || !ok {
@@ -302,7 +316,10 @@ func (a *app) login(ctx context.Context) error {
 			a.cfg.OpenBrowser(s.AuthorizeURL)
 		}
 		fmt.Fprint(a.stdout, "paste the authorization code shown after approving: ")
-		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		line, err := readLoginCode(ctx, os.Stdin)
+		if err != nil {
+			return err
+		}
 		if code = strings.TrimSpace(line); code == "" {
 			return errors.New("no code entered")
 		}
@@ -507,8 +524,8 @@ func (a *app) switchTo(ctx context.Context) error {
 
 // menuBar opens the installed AIU.app, which draws the panel and calls this binary.
 func (a *app) menuBar(context.Context) error {
-	if err := exec.Command("/usr/bin/open", "-a", "AIU").Run(); err != nil {
-		return errors.New("AIU.app is not installed — run `make install` in the aiu repo")
+	if err := openMenuBar(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -526,7 +543,7 @@ func (a *app) help() {
   aiu list | remove <email|label> | sync | whoami
   aiu link [install|remove|status]                    add or drop the ~/.local/bin/aiu shortcut
   aiu update [--force]                                is there a newer release? (never installs)
-  aiu menubar                                         open the menu bar app (AIU.app)
+  aiu gui | menubar                                    open the bundled desktop app
 
 %s
   Every command takes --codex (or --provider codex) to act on Codex instead:

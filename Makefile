@@ -27,6 +27,12 @@ build:
 test:
 	go test -race ./...
 
+# Decode the Go golden fixtures with the same model used by AIU.app.
+test-contract:
+	mkdir -p build
+	$(SWIFT) macos/AIUModel.swift macos/tests/Contract.swift -o build/test-swift-contract
+	build/test-swift-contract tests/fixtures/frontend
+
 # Regenerates macos/AppIcon.icns from macos/icon/render.swift (the .icns is committed).
 icon:
 	rm -rf build/AppIcon.iconset && mkdir -p build/AppIcon.iconset
@@ -54,13 +60,13 @@ ifeq ($(BIN_ARCH),universal)
 	CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 CC="clang -arch arm64" go build -ldflags "$(LDFLAGS)" -o bin/aiu-arm64 ./cmd/aiu
 	CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 CC="clang -arch x86_64" go build -ldflags "$(LDFLAGS)" -o bin/aiu-amd64 ./cmd/aiu
 	lipo -create -output $(APP)/Contents/MacOS/aiu bin/aiu-arm64 bin/aiu-amd64
-	$(SWIFT) -target arm64-apple-macosx26.0 macos/AIUBar.swift -o bin/AIUBar-arm64
-	$(SWIFT) -target x86_64-apple-macosx26.0 macos/AIUBar.swift -o bin/AIUBar-x86_64
+	$(SWIFT) -target arm64-apple-macosx26.0 macos/AIUModel.swift macos/AIUBar.swift -o bin/AIUBar-arm64
+	$(SWIFT) -target x86_64-apple-macosx26.0 macos/AIUModel.swift macos/AIUBar.swift -o bin/AIUBar-x86_64
 	lipo -create -output $(APP)/Contents/MacOS/AIUBar bin/AIUBar-arm64 bin/AIUBar-x86_64
 else
 	CGO_ENABLED=1 go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/aiu
 	cp $(BIN) $(APP)/Contents/MacOS/aiu
-	$(SWIFT) -target $(shell uname -m)-apple-macosx26.0 macos/AIUBar.swift -o $(APP)/Contents/MacOS/AIUBar
+	$(SWIFT) -target $(shell uname -m)-apple-macosx26.0 macos/AIUModel.swift macos/AIUBar.swift -o $(APP)/Contents/MacOS/AIUBar
 endif
 	cp internal/core/assets/*.svg macos/AppIcon.icns $(APP)/Contents/Resources/
 	sed -e 's/__VERSION__/$(VERSION)/g' -e 's/__BUILD__/$(BUILD)/g' -e 's/__BUNDLE_ID__/$(BUNDLE_ID)/g' macos/Info.plist.in > $(APP)/Contents/Info.plist

@@ -3,8 +3,6 @@ package core
 import (
 	"encoding/json"
 	"errors"
-	"os"
-	"syscall"
 	"time"
 )
 
@@ -52,34 +50,17 @@ func (c *Config) writeCache(data cache) {
 // on the machine shares the cache, and an unlocked read-modify-write from two
 // processes loses whichever update landed first — including a 429 cooldown.
 func (c *Config) withCacheLock(fn func(cache) bool) error {
-	if err := os.MkdirAll(c.Dir, 0o700); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(c.lockFile(), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	deadline := time.Now().Add(lockWait)
-	for {
-		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-		if err == nil {
-			break
+	err := withFileLock(c.lockFile(), func() error {
+		data := c.readCache()
+		if fn(data) {
+			c.writeCache(data)
 		}
-		if !errors.Is(err, syscall.EWOULDBLOCK) {
-			return err
-		}
-		if time.Now().After(deadline) {
-			return errLocked
-		}
-		time.Sleep(25 * time.Millisecond)
+		return nil
+	})
+	if errors.Is(err, errLockTimeout) {
+		return errLocked
 	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-	data := c.readCache()
-	if fn(data) {
-		c.writeCache(data)
-	}
-	return nil
+	return err
 }
 
 // cacheUpdate merges into (or with replace, replaces) one entry under the lock.

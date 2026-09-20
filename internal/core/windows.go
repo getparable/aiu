@@ -16,7 +16,7 @@ type Window struct {
 	Group    string  `json:"group"` // "session" (≤24h) or "weekly"
 	Label    string  `json:"label"`
 	Percent  float64 `json:"percent"`
-	Known    bool    `json:"-"` // false when the body carried no percentage
+	Known    bool    `json:"known"` // false when the body carried no percentage
 	ResetsAt string  `json:"resetsAt,omitempty"`
 	Severity string  `json:"severity,omitempty"` // warning, critical or locked
 }

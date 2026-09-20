@@ -165,7 +165,7 @@ func (c *Config) tokenGet(key string) (*Record, error) {
 		return &r, nil
 	}
 	store := map[string]*Record{}
-	if _, err := readJSONFile(c.fileStore(), &store); err != nil {
+	if _, err := readTokenStore(c, &store); err != nil {
 		return nil, err
 	}
 	return store[key], nil
@@ -181,11 +181,11 @@ func (c *Config) tokenSet(key string, r *Record) error {
 	}
 	return withFileLock(c.fileStore()+".lock", func() error {
 		store := map[string]*Record{}
-		if _, err := readJSONFile(c.fileStore(), &store); err != nil {
+		if _, err := readTokenStore(c, &store); err != nil {
 			return err
 		}
 		store[key] = r
-		return writePrivateJSON(c.fileStore(), store)
+		return writeTokenStore(c, store)
 	})
 }
 
@@ -195,11 +195,11 @@ func (c *Config) tokenDelete(key string) error {
 	}
 	return withFileLock(c.fileStore()+".lock", func() error {
 		store := map[string]*Record{}
-		if _, err := readJSONFile(c.fileStore(), &store); err != nil {
+		if _, err := readTokenStore(c, &store); err != nil {
 			return err
 		}
 		delete(store, key)
-		return writePrivateJSON(c.fileStore(), store)
+		return writeTokenStore(c, store)
 	})
 }
 
