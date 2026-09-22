@@ -1,0 +1,111 @@
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/getparable/aiu/internal/core"
+)
+
+func validateResetOptions(opts *options, command string) error {
+	if (opts.yes || opts.resetCreditID != "" || opts.resetRequestID != "") && command != "reset" {
+		return errors.New("--yes, --credit-id, and --request-id are only valid with reset")
+	}
+	if opts.autoResetEnabled != "" && command != "auto-reset" {
+		return errors.New("--enabled is only valid with auto-reset")
+	}
+	if command == "reset" && !opts.yes {
+		return errors.New("reset requires --yes: using a banked reset refreshes eligible usage windows and moves the weekly reset date; inspect `aiu resets codex:NAME` first")
+	}
+	if command == "auto-reset" && opts.autoResetEnabled != "true" && opts.autoResetEnabled != "false" {
+		return errors.New("auto-reset requires --enabled true or --enabled false")
+	}
+	if opts.command != "frontend" && (command == "reset" || command == "resets" || command == "auto-reset") && (len(opts.args) != 1 || opts.args[0] == "") {
+		return fmt.Errorf("%s needs exactly one account selector", command)
+	}
+	return nil
+}
+
+func (a *app) resets(ctx context.Context) error {
+	view, err := a.cfg.ListBankedResets(ctx, a.opts.args[0], a.opts.provider)
+	if err != nil {
+		return err
+	}
+	if a.opts.json {
+		return json.NewEncoder(a.stdout).Encode(view)
+	}
+	fmt.Fprintln(a.stdout, a.p.bold("Banked resets · "+a.opts.args[0]))
+	fmt.Fprintln(a.stdout, strings.Join(renderBankedResets(a.p, view, true), "\n"))
+	return nil
+}
+
+func (a *app) reset(ctx context.Context) error {
+	result, err := a.cfg.ConsumeBankedReset(ctx, a.opts.args[0], a.opts.provider, a.opts.resetCreditID, a.opts.resetRequestID)
+	if err != nil {
+		return err
+	}
+	if a.opts.json {
+		return json.NewEncoder(a.stdout).Encode(result)
+	}
+	fmt.Fprintln(a.stdout, result.Message)
+	fmt.Fprintln(a.stdout, a.p.dim("Request: "+result.RequestID+". Reuse --request-id to query this same attempt."))
+	return nil
+}
+
+func (a *app) autoReset(ctx context.Context) error {
+	enabled := a.opts.autoResetEnabled == "true"
+	if err := a.cfg.SetAutoReset(ctx, a.opts.args[0], a.opts.provider, enabled); err != nil {
+		return err
+	}
+	if a.opts.json {
+		return json.NewEncoder(a.stdout).Encode(struct {
+			Account string `json:"account"`
+			Enabled bool   `json:"autoReset"`
+		}{a.opts.args[0], enabled})
+	}
+	if enabled {
+		fmt.Fprintln(a.stdout, "Auto reset enabled at 1% remaining for "+a.opts.args[0]+". Checks run while AIU collects usage.")
+	} else {
+		fmt.Fprintln(a.stdout, "Auto reset disabled for "+a.opts.args[0])
+	}
+	return nil
+}
+
+func renderBankedResets(p painter, view *core.BankedResets, details bool) []string {
+	count := "unknown"
+	if view.AvailableCount != nil {
+		count = fmt.Sprintf("%d available", *view.AvailableCount)
+	}
+	line := "  banked resets  " + count
+	if view.AutoReset {
+		line += " · auto at 1% remaining"
+	}
+	lines := []string{line}
+	if view.AutoResetStatus != "" {
+		lines = append(lines, "  "+p.dim(view.AutoResetStatus))
+	}
+	if view.PendingRequest != nil {
+		lines = append(lines, "  "+p.yellow("Reset outcome pending; retry reconciles the same request "+view.PendingRequest.RequestID))
+	}
+	for _, note := range []string{view.Stale, view.Error} {
+		if note != "" {
+			lines = append(lines, "  "+p.yellow(note))
+		}
+	}
+	if details {
+		if view.Credits == nil {
+			lines = append(lines, "  Reset details are unavailable.")
+		}
+		for _, credit := range view.Credits {
+			expiry := credit.ExpiresAt
+			if expiry == "" {
+				expiry = "not reported"
+			}
+			lines = append(lines, fmt.Sprintf("  %s · %s · expires %s", credit.ID, credit.Status, expiry))
+		}
+	}
+	return lines
+}

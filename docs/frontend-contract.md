@@ -14,7 +14,8 @@ aiu frontend login --provider claude --label Work --contract-version 1
 aiu frontend switch claude:person@example.test#organization --contract-version 1
 ```
 
-Commands are `status`, `add`, `login`, `switch`, `remove`, and `sync`.
+Commands are `status`, `add`, `login`, `switch`, `remove`, `sync`, `resets`,
+`reset`, and `auto-reset`.
 `--provider claude|codex` narrows provider selection. `switch` and `remove`
 require one full account selector; append `#` even for an empty organization.
 `--label` applies to import/login. Browser login is supported; use the normal
@@ -46,6 +47,33 @@ unknown percentage from zero. The frontend displays Go's `recommended`, `why`,
 Go-produced fixtures in `tests/fixtures/frontend` are decoded by the Swift model
 and copied into the Rust repository's contract tests.
 
+Codex rows add an optional `bankedResets` object: `availableCount` is nullable,
+`credits` is nullable when details have not been fetched, and `canRedeem` is Go's
+decision. Each credit contains `id`, `resetType`, `status`, `grantedAt`, `expiresAt`,
+`title`, `description`, and `canRedeem`. Optional strings `fetchedAt`, `stale`, and
+`error` describe cached details. `autoReset` defaults false; `autoResetStatus`
+explains the current automation state. `pendingRequest: {requestId, creditId?}`
+is authoritative for retrying an uncertain redemption. Unknown counts and dates
+must not be rendered as zero or an invented expiry.
+
+```text
+aiu frontend resets codex:person@example.test#account-id --contract-version 1
+aiu frontend reset codex:person@example.test#account-id --yes --request-id UUID --contract-version 1
+aiu frontend auto-reset codex:person@example.test#account-id --enabled true --contract-version 1
+```
+
+These commands require one selector and advertise separate hello capabilities.
+`reset` requires explicit frontend confirmation before passing `--yes`. Generate
+one UUID per confirmed intent and retain it for every retry, including after
+network failure. Optional `--credit-id ID` selects a credit; omission lets the
+provider choose. Never change that selection while retrying the same ID. A Go
+pending request takes precedence over a local intent that was never accepted.
+`auto-reset` requires `--enabled true|false`; the frontend displays the saved
+setting and never implements its own threshold or calls the consume route itself.
+See [reset policy and recovery](banked-resets.md). Status uses the usage response's
+embedded balance plus cached details; it does not issue an extra listing request
+on every poll.
+
 Mutations return a refreshed snapshot when available. If a mutation committed but
 snapshot collection was cancelled or failed, the result remains `ok: true`, with
 `accounts: null` and a message ending in `snapshot unavailable`. Keep the prior
@@ -66,6 +94,11 @@ and persist its response, bounded by its one-minute operation context and HTTP
 timeouts. A completed login is reported as success even if cancellation arrived
 during exchange. Storage/profile failures remain ordinary errors; abrupt OS kill
 or machine failure cannot guarantee persistence.
+
+Banked-reset POSTs use the same cancellation boundary: cancel before dispatch,
+then finish receiving and saving the issued outcome before exiting. A successful
+terminal redemption remains successful if its follow-up snapshot is cancelled.
+Do not treat Cancel as evidence that a dispatched reset was not consumed.
 
 The frontend must keep draining stdout, send cancellation on shutdown, and wait
 for and reap its child instead of killing it during credential exchange. Run at

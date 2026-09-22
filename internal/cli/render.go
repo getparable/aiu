@@ -99,6 +99,9 @@ func renderAccount(p painter, res *core.Result, labelWidth int, tagged bool, now
 	}
 	meta = append(meta, note)
 	lines := []string{title + "  " + strings.Join(meta, p.dim(" · "))}
+	if res.BankedResets != nil {
+		lines = append(lines, renderBankedResets(p, res.BankedResets, false)...)
+	}
 
 	if res.Err != "" {
 		return append(lines, "  "+p.red("✖")+" "+res.Err)
@@ -231,26 +234,27 @@ func render(p painter, snap *core.Snapshot, now time.Time) string {
 
 // jsonAccount is the stable --json shape, for scripts and status bars.
 type jsonAccount struct {
-	Provider         core.Provider    `json:"provider"`
-	Email            string           `json:"email"`
-	Label            string           `json:"label"`
-	Org              string           `json:"org,omitempty"`
-	OrgName          string           `json:"orgName,omitempty"`
-	Active           bool             `json:"active"`
-	Tier             string           `json:"tier,omitempty"`
-	SubscriptionType string           `json:"subscriptionType,omitempty"`
-	RateLimitTier    string           `json:"rateLimitTier,omitempty"`
-	PlanType         string           `json:"planType,omitempty"`
-	TokenExpiresAt   string           `json:"tokenExpiresAt,omitempty"`
-	LoginExpiresAt   string           `json:"loginExpiresAt,omitempty"`
-	Login            core.LoginHealth `json:"login"`
-	ReadOnly         bool             `json:"readOnly"`
-	CanSwitch        bool             `json:"canSwitch"`
-	Windows          []core.Window    `json:"windows"`
-	Usage            any              `json:"usage"`
-	Stale            string           `json:"stale,omitempty"`
-	FetchedAt        string           `json:"fetchedAt,omitempty"`
-	Error            string           `json:"error,omitempty"`
+	Provider         core.Provider      `json:"provider"`
+	Email            string             `json:"email"`
+	Label            string             `json:"label"`
+	Org              string             `json:"org,omitempty"`
+	OrgName          string             `json:"orgName,omitempty"`
+	Active           bool               `json:"active"`
+	Tier             string             `json:"tier,omitempty"`
+	SubscriptionType string             `json:"subscriptionType,omitempty"`
+	RateLimitTier    string             `json:"rateLimitTier,omitempty"`
+	PlanType         string             `json:"planType,omitempty"`
+	TokenExpiresAt   string             `json:"tokenExpiresAt,omitempty"`
+	LoginExpiresAt   string             `json:"loginExpiresAt,omitempty"`
+	Login            core.LoginHealth   `json:"login"`
+	ReadOnly         bool               `json:"readOnly"`
+	CanSwitch        bool               `json:"canSwitch"`
+	Windows          []core.Window      `json:"windows"`
+	Usage            any                `json:"usage"`
+	Stale            string             `json:"stale,omitempty"`
+	FetchedAt        string             `json:"fetchedAt,omitempty"`
+	Error            string             `json:"error,omitempty"`
+	BankedResets     *core.BankedResets `json:"bankedResets,omitempty"`
 	// Rank is the account's place in its provider's ranking, 0 best, and Note the few
 	// words a switcher shows beside it ("43% left", "back in 4d 16h"). Recommended marks
 	// the one account per provider worth switching to next, and Why says what earned it.
@@ -312,6 +316,7 @@ func toJSON(snap *core.Snapshot, now time.Time) []jsonAccount {
 			TokenExpiresAt: iso(r.ExpiresAt), LoginExpiresAt: iso(r.RefreshTokenExpiresAt),
 			Login: core.HealthOf(res, now), ReadOnly: r.IsReadOnly(), CanSwitch: !r.IsReadOnly() && !r.Missing,
 			Windows: windows, Usage: usage, Stale: res.Stale, FetchedAt: iso(res.FetchedAt), Error: res.Err,
+			BankedResets: res.BankedResets,
 		})
 		last := &out[len(out)-1]
 		last.Rank, last.Note, last.Spent = placings[res].rank, placings[res].note, placings[res].spent

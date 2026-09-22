@@ -1,0 +1,104 @@
+[
+  {
+    "provider": "codex",
+    "email": "reset@example.test",
+    "label": "Banked resets",
+    "org": "reset-org",
+    "active": false,
+    "tier": "ChatGPT Plus",
+    "planType": "plus",
+    "tokenExpiresAt": "2030-01-01T01:00:00Z",
+    "login": {
+      "state": "ok",
+      "message": "login active"
+    },
+    "readOnly": false,
+    "canSwitch": true,
+    "windows": [
+      {
+        "key": "primary",
+        "group": "session",
+        "label": "5h session",
+        "percent": 99,
+        "known": true,
+        "resetsAt": "2030-01-01T05:00:00Z",
+        "severity": "critical"
+      },
+      {
+        "key": "secondary",
+        "group": "weekly",
+        "label": "7d all",
+        "percent": 30,
+        "known": true,
+        "resetsAt": "2030-01-07T00:00:00Z"
+      }
+    ],
+    "usage": {
+      "rate_limit": {
+        "primary_window": {
+          "used_percent": 99,
+          "limit_window_seconds": 18000,
+          "reset_at": 1893474000
+        },
+        "secondary_window": {
+          "used_percent": 30,
+          "limit_window_seconds": 604800,
+          "reset_at": 1893974400
+        }
+      }
+    },
+    "fetchedAt": "2030-01-01T00:00:00Z",
+    "bankedResets": {
+      "availableCount": 3,
+      "credits": [
+        {
+          "id": "synthetic-credit-1",
+          "resetType": "codex_rate_limits",
+          "status": "available",
+          "grantedAt": "2029-12-01T00:00:00Z",
+          "expiresAt": "2030-02-01T00:00:00Z",
+          "title": "Banked Codex reset",
+          "description": "",
+          "canRedeem": true
+        }
+      ],
+      "fetchedAt": "2030-01-01T00:00:00Z",
+      "canRedeem": true,
+      "autoReset": true,
+      "autoResetStatus": "waiting for fresh usage"
+    },
+    "rank": 0,
+    "note": "70% left",
+    "recommended": true,
+    "why": "70% of the week left · ChatGPT Plus"
+  },
+  {
+    "provider": "codex",
+    "email": "pending@example.test",
+    "label": "",
+    "org": "pending-org",
+    "active": false,
+    "tier": "ChatGPT",
+    "login": {
+      "state": "missing",
+      "message": "no stored token — sign in again"
+    },
+    "readOnly": false,
+    "canSwitch": false,
+    "windows": [],
+    "usage": null,
+    "error": "no stored token",
+    "bankedResets": {
+      "availableCount": null,
+      "credits": null,
+      "stale": "reset outcome is uncertain",
+      "canRedeem": false,
+      "pendingRequest": {
+        "requestId": "12345678-1234-4234-8234-123456789abc"
+      },
+      "autoReset": false
+    },
+    "rank": 1,
+    "note": "unavailable"
+  }
+]

@@ -124,6 +124,7 @@ type Config struct {
 	ClaudeAuthorizeConsoleURL string
 	ClaudeManualRedirectURL   string
 	CodexUsageURL             string
+	CodexResetCreditsURL      string
 	CodexTokenURL             string
 	CodexAuthorizeURL         string
 	ReleaseAPIURL             string
@@ -152,6 +153,7 @@ func DefaultConfig() *Config {
 		ClaudeAuthorizeConsoleURL: "https://platform.claude.com/oauth/authorize",
 		ClaudeManualRedirectURL:   "https://console.anthropic.com/oauth/code/callback",
 		CodexUsageURL:             "https://chatgpt.com/backend-api/wham/usage",
+		CodexResetCreditsURL:      "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
 		CodexTokenURL:             "https://auth.openai.com/oauth/token",
 		CodexAuthorizeURL:         "https://auth.openai.com/oauth/authorize",
 		ReleaseAPIURL:             releaseAPI,

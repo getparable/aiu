@@ -20,6 +20,12 @@ struct ContractTest {
             from: Data(contentsOf: directory.appendingPathComponent("empty.json")))
         precondition(empty.isEmpty)
 
+        // Additive banked-reset fields must not break the existing Swift model.
+        let banked = try AIUJSON.decoder().decode([Account].self,
+            from: Data(contentsOf: directory.appendingPathComponent("banked-resets.json")))
+        precondition(banked.count == 2 && banked[0].provider == "codex")
+        precondition(banked[0].windows[0].percent == 99 && banked[1].needsLogin)
+
         for name in ["failure", "cancelled"] {
             let outcome = try AIUJSON.decoder().decode(FrontendOutcome.self,
                 from: Data(contentsOf: directory.appendingPathComponent(name + ".json")))
