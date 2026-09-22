@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -54,11 +55,15 @@ func TestListAndConsumeBankedResetSyntheticAPI(t *testing.T) {
 	defer server.Close()
 	c := &Config{Dir: filepath.Join(t.TempDir(), "aiu"), CodexResetCreditsURL: server.URL + "/credits", HTTP: server.Client(), Now: time.Now, Warn: func(string) {}}
 	r := resetTestAccount(t, c)
+	threshold := 7
+	if err := c.ConfigureAutoReset(context.Background(), r.Email+"#"+r.OrgUUID, Codex, nil, &threshold); err != nil {
+		t.Fatal(err)
+	}
 	listed, err := c.ListBankedResets(context.Background(), r.Email+"#"+r.OrgUUID, Codex)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if listed.AvailableCount == nil || *listed.AvailableCount != 3 || len(listed.Credits) != 1 || !listed.Credits[0].CanRedeem {
+	if listed.AvailableCount == nil || *listed.AvailableCount != 3 || len(listed.Credits) != 1 || !listed.Credits[0].CanRedeem || listed.AutoResetThresholdPercent != 7 {
 		t.Fatalf("unexpected list: %#v", listed)
 	}
 	request := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -244,5 +249,281 @@ func TestCancelledRetryKeepsPreviouslyIssuedPendingRequest(t *testing.T) {
 	}
 	if _, err := c.ConsumeBankedReset(context.Background(), r.Email+"#"+r.OrgUUID, Codex, "", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"); err == nil {
 		t.Fatal("a new request ID must remain blocked")
+	}
+}
+
+func TestAutoResetThresholdValidationDefaultsAndBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		threshold int
+		used      float64
+		want      bool
+	}{{"zero exact", 0, 100, true}, {"zero below", 0, 99.99, false}, {"five exact", 5, 95, true}, {"ten exact", 10, 90, true}, {"ninety-nine exact", 99, 1, true}, {"five below", 5, 94.99, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, _ := json.Marshal(map[string]any{"rate_limit": map[string]any{"primary_window": map[string]any{"used_percent": tc.used}, "secondary_window": nil}})
+			high, known, _ := usageThreshold(raw, tc.threshold, tc.threshold)
+			if !known || high != tc.want {
+				t.Fatalf("threshold %d at used %.2f => high=%v known=%v", tc.threshold, tc.used, high, known)
+			}
+		})
+	}
+	dir := t.TempDir()
+	c := &Config{Dir: filepath.Join(dir, "aiu"), Now: time.Now, Warn: func(string) {}}
+	if err := c.ConfigureAutoReset(context.Background(), "anything", Codex, nil, nil); err == nil {
+		t.Fatal("empty partial settings should fail")
+	}
+	bad := 100
+	if err := c.ConfigureAutoReset(context.Background(), "anything", Codex, nil, &bad); err == nil {
+		t.Fatal("out of range must fail before account lookup")
+	}
+	if _, err := os.Stat(c.resetStatePath()); !os.IsNotExist(err) {
+		t.Fatalf("invalid configuration mutated storage: %v", err)
+	}
+	r := resetTestAccount(t, c)
+	if got := c.cachedBankedResets(r, nil, "").AutoResetThresholdPercent; got != 1 {
+		t.Fatalf("legacy missing threshold default=%d", got)
+	}
+	zero := 0
+	if err := c.ConfigureAutoReset(context.Background(), r.Email+"#"+r.OrgUUID, Codex, nil, &zero); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.cachedBankedResets(r, nil, "").AutoResetThresholdPercent; got != 0 {
+		t.Fatalf("explicit zero should be preserved, got %d", got)
+	}
+	if err := c.SetAutoReset(context.Background(), r.Email+"#"+r.OrgUUID, Codex, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.cachedBankedResets(r, nil, "").AutoResetThresholdPercent; got != 0 {
+		t.Fatalf("SetAutoReset reset saved threshold: %d", got)
+	}
+	r2 := &Record{Provider: Codex, Email: "other@example.test", OrgUUID: "acct-2", AccountID: "acct-2", AccessToken: "synthetic-token-2", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}
+	idx, err := c.LoadIndex()
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx.Accounts = append(idx.Accounts, &IndexEntry{Email: r2.Email, Label: "other", Org: r2.OrgUUID, Provider: Codex})
+	if err := c.saveIndex(idx); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.tokenSet(r2.StoreKey(), r2); err != nil {
+		t.Fatal(err)
+	}
+	ten := 10
+	if err := c.ConfigureAutoReset(context.Background(), r2.Email+"#"+r2.OrgUUID, Codex, nil, &ten); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.cachedBankedResets(r2, nil, "").AutoResetThresholdPercent; got != 10 {
+		t.Fatalf("second account threshold=%d", got)
+	}
+	if got := c.cachedBankedResets(r, nil, "").AutoResetThresholdPercent; got != 0 {
+		t.Fatalf("second account changed first threshold to %d", got)
+	}
+}
+
+func TestThresholdChangesKeepPendingAndOriginalRetryThreshold(t *testing.T) {
+	posts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		if posts == 1 {
+			w.WriteHeader(500)
+			return
+		}
+		io.WriteString(w, `{"code":"reset"}`)
+	}))
+	defer server.Close()
+	c := &Config{Dir: filepath.Join(t.TempDir(), "aiu"), CodexResetCreditsURL: server.URL, HTTP: server.Client(), Now: time.Now, Warn: func(string) {}}
+	r := resetTestAccount(t, c)
+	one := 1
+	five := 5
+	enabled := true
+	if err := c.withResetState(func(s *resetState) error {
+		resetAccount(s, r.StoreKey()).Details = &BankedResets{AvailableCount: &one}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.ConfigureAutoReset(context.Background(), r.Email+"#"+r.OrgUUID, Codex, &enabled, &five); err != nil {
+		t.Fatal(err)
+	}
+	id := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	if _, err := c.ConsumeBankedReset(context.Background(), r.Email+"#"+r.OrgUUID, Codex, "", id); err == nil {
+		t.Fatal("first synthetic response should be uncertain")
+	}
+	state, err := c.loadResetState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := state.Accounts[r.StoreKey()]
+	if a.Pending == nil || a.PendingThresholdPercent == nil || *a.PendingThresholdPercent != 5 {
+		t.Fatalf("pending threshold not captured: %#v", a)
+	}
+	twenty := 20
+	if err := c.ConfigureAutoReset(context.Background(), r.Email+"#"+r.OrgUUID, Codex, nil, &twenty); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.ConsumeBankedReset(context.Background(), r.Email+"#"+r.OrgUUID, Codex, "", id); err != nil {
+		t.Fatal(err)
+	}
+	state, err = c.loadResetState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a = state.Accounts[r.StoreKey()]
+	if a.Pending != nil || a.AutoRequestID != id || a.LastResetThresholdPercent == nil || *a.LastResetThresholdPercent != 5 || a.Completed[id].ThresholdPercent == nil || *a.Completed[id].ThresholdPercent != 5 {
+		t.Fatalf("retry changed the original threshold/latch: %#v", a)
+	}
+	if err := c.SetAutoReset(context.Background(), r.Email+"#"+r.OrgUUID, Codex, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetAutoReset(context.Background(), r.Email+"#"+r.OrgUUID, Codex, true); err != nil {
+		t.Fatal(err)
+	}
+	state, err = c.loadResetState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a = state.Accounts[r.StoreKey()]
+	if a.AutoRequestID != id || a.AutoArmed {
+		t.Fatalf("off/on bypassed spent latch: %#v", a)
+	}
+	one = 1
+	if err := c.ConfigureAutoReset(context.Background(), r.Email+"#"+r.OrgUUID, Codex, nil, &one); err != nil {
+		t.Fatal(err)
+	}
+	// Lowering the threshold cannot let an observation with only 3% remaining
+	// rearm a reset that was issued at a 5% threshold.
+	usage := json.RawMessage(`{"rate_limit":{"primary_window":{"used_percent":97},"secondary_window":{"used_percent":97}},"rate_limit_reset_credits":{"available_count":1}}`)
+	c.maybeAutoReset(context.Background(), r, usage, time.Now().Add(time.Second).UnixMilli())
+	state, err = c.loadResetState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Accounts[r.StoreKey()].AutoRequestID != id {
+		t.Fatal("lowering threshold bypassed the original spend latch")
+	}
+	// Current threshold is 20, original attempt was 5: 11% remaining is not above both.
+	twenty = 20
+	if err := c.ConfigureAutoReset(context.Background(), r.Email+"#"+r.OrgUUID, Codex, nil, &twenty); err != nil {
+		t.Fatal(err)
+	}
+	usage = json.RawMessage(`{"rate_limit":{"primary_window":{"used_percent":89},"secondary_window":{"used_percent":89}},"rate_limit_reset_credits":{"available_count":1}}`)
+	c.maybeAutoReset(context.Background(), r, usage, time.Now().Add(time.Second).UnixMilli())
+	state, err = c.loadResetState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Accounts[r.StoreKey()].AutoRequestID != id {
+		t.Fatal("lower recovery did not preserve latch")
+	}
+	usage = json.RawMessage(`{"rate_limit":{"primary_window":{"used_percent":0},"secondary_window":{"used_percent":0}},"rate_limit_reset_credits":{"available_count":1}}`)
+	c.maybeAutoReset(context.Background(), r, usage, time.Now().Add(2*time.Second).UnixMilli())
+	state, err = c.loadResetState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Accounts[r.StoreKey()].AutoRequestID != "" || !state.Accounts[r.StoreKey()].AutoArmed {
+		t.Fatal("above both thresholds did not rearm")
+	}
+}
+
+func TestAutoResetConfiguredThresholdControlsActualPOSTBoundary(t *testing.T) {
+	for _, threshold := range []int{0, 5, 10, 99} {
+		t.Run(strconv.Itoa(threshold), func(t *testing.T) {
+			posts := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/consume" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				posts++
+				io.WriteString(w, `{"code":"reset"}`)
+			}))
+			defer server.Close()
+			c := &Config{Dir: filepath.Join(t.TempDir(), "aiu"), CodexResetCreditsURL: server.URL, HTTP: server.Client(), Now: time.Now, Warn: func(string) {}}
+			r := resetTestAccount(t, c)
+			enabled := true
+			if err := c.ConfigureAutoReset(context.Background(), r.Email+"#"+r.OrgUUID, Codex, &enabled, &threshold); err != nil {
+				t.Fatal(err)
+			}
+			used := float64(100-threshold) - .01
+			below, _ := json.Marshal(map[string]any{"rate_limit": map[string]any{"primary_window": map[string]any{"used_percent": used}, "secondary_window": nil}, "rate_limit_reset_credits": map[string]any{"available_count": 2}})
+			c.maybeAutoReset(context.Background(), r, below, time.Now().UnixMilli())
+			if posts != 0 {
+				t.Fatalf("below boundary issued %d requests", posts)
+			}
+			at, _ := json.Marshal(map[string]any{"rate_limit": map[string]any{"primary_window": map[string]any{"used_percent": float64(100 - threshold)}, "secondary_window": nil}, "rate_limit_reset_credits": map[string]any{"available_count": 2}})
+			c.maybeAutoReset(context.Background(), r, at, time.Now().Add(time.Second).UnixMilli())
+			if posts != 1 {
+				t.Fatalf("exact inclusive boundary issued %d requests", posts)
+			}
+		})
+	}
+}
+
+func TestRecoveredAutoIntentKeepsThresholdCapturedBeforeCrash(t *testing.T) {
+	posts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		io.WriteString(w, `{"code":"reset"}`)
+	}))
+	defer server.Close()
+	c := &Config{Dir: filepath.Join(t.TempDir(), "aiu"), CodexResetCreditsURL: server.URL, HTTP: server.Client(), Now: time.Now, Warn: func(string) {}}
+	r := resetTestAccount(t, c)
+	five, twenty := 5, 20
+	one := 1
+	if err := c.withResetState(func(s *resetState) error {
+		a := resetAccount(s, r.StoreKey())
+		a.AutoEnabled = true
+		a.AutoArmed = false
+		a.AutoRequestID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+		a.AutoRequestThresholdPercent = &five // durable auto intent, before pending dispatch
+		a.Details = &BankedResets{AvailableCount: &one}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.ConfigureAutoReset(context.Background(), r.Email+"#"+r.OrgUUID, Codex, nil, &twenty); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.ConsumeBankedReset(context.Background(), r.Email+"#"+r.OrgUUID, Codex, "", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"); err != nil {
+		t.Fatal(err)
+	}
+	state, err := c.loadResetState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := state.Accounts[r.StoreKey()]
+	if posts != 1 || a.LastResetThresholdPercent == nil || *a.LastResetThresholdPercent != 5 || a.Completed[a.AutoRequestID].ThresholdPercent == nil || *a.Completed[a.AutoRequestID].ThresholdPercent != 5 {
+		t.Fatalf("recovered intent used edited threshold: posts=%d account=%#v", posts, a)
+	}
+}
+
+func TestLegacyAutoIntentUsesDefaultThresholdAfterPreferenceEdit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, `{"code":"reset"}`) }))
+	defer server.Close()
+	c := &Config{Dir: filepath.Join(t.TempDir(), "aiu"), CodexResetCreditsURL: server.URL, HTTP: server.Client(), Now: time.Now, Warn: func(string) {}}
+	r := resetTestAccount(t, c)
+	one := 1
+	twenty := 0
+	if err := c.withResetState(func(s *resetState) error {
+		a := resetAccount(s, r.StoreKey())
+		a.AutoEnabled, a.AutoArmed = true, false
+		a.AutoRequestID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+		a.Details = &BankedResets{AvailableCount: &one}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.ConfigureAutoReset(context.Background(), r.Email+"#"+r.OrgUUID, Codex, nil, &twenty); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.ConsumeBankedReset(context.Background(), r.Email+"#"+r.OrgUUID, Codex, "", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"); err != nil {
+		t.Fatal(err)
+	}
+	state, err := c.loadResetState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state.Accounts[r.StoreKey()].Completed["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"].ThresholdPercent; got == nil || *got != 1 {
+		t.Fatalf("legacy auto intent should retain default threshold 1: %v", got)
 	}
 }

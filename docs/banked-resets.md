@@ -9,6 +9,8 @@ the Swift frontend continues to decode the existing account fields unchanged.
 aiu resets codex:work
 aiu reset codex:work --yes
 aiu auto-reset codex:work --enabled true
+aiu auto-reset codex:work --enabled true --threshold 5
+aiu auto-reset codex:work --threshold 10
 aiu auto-reset codex:work --enabled false
 ```
 
@@ -20,9 +22,17 @@ zero, and the balance can exceed the number of credit details returned.
 
 ## Automatic resets
 
-Auto reset is **off by default, per account**. When enabled, a successful fresh
-usage response with **1% or less remaining (at least 99% used)** in an eligible
-main Codex window and a positive reset balance can redeem one reset. Accounts
+Auto reset is **off by default, per account**, with a default threshold of **1%
+remaining**. Choose any whole remaining percentage from **0 through 99** with
+`--threshold N` or the Rust panel's threshold editor and **Save threshold** button.
+Zero means fully exhausted; 5 means reset at 5% remaining or less (95% used or
+more). A threshold-only change preserves whether automation is enabled, and an
+enable/disable-only change preserves the saved percentage. Both settings can be
+updated together. Existing accounts without a saved percentage continue at 1%.
+
+When enabled, a successful fresh usage response at or below that remaining
+threshold in an eligible main Codex window and a positive reset balance can redeem
+one reset. Accounts
 with only one reported main window are supported. Cached usage, unknown
 percentages, and failed provider requests cannot initiate a new automatic spend.
 
@@ -32,12 +42,17 @@ service. The shared five-minute usage request spacing still applies, so the
 trigger runs on the next eligible fresh reading, not at the exact instant usage
 crosses the threshold. Multiple frontends share one preference and reset journal.
 
-After a redemption attempt, AIU waits for a later fresh reading below the
-threshold before arming another automatic spend. Delayed provider updates,
-restart, repeated enabling, and turning the toggle off and back on do not create
-another spend for that exhausted window. Uncertain outcomes reuse the same
+After a redemption attempt, AIU waits for a later fresh reading whose remaining
+quota is above both the current threshold and the threshold used for that attempt,
+in every reported main window, before arming another automatic spend. Changing
+the percentage cannot manufacture recovery from the old reading. Delayed provider
+updates, restart, repeated enabling, and turning the toggle off and back on do not
+create another spend for that exhausted window. Uncertain outcomes reuse the same
 request ID. An unresolved manual attempt pauses automatic spending. Removing an
 account disables its auto preference but retains its redemption journal.
+
+`auto-reset --json` acknowledges only the supplied settings. For the complete
+saved state, inspect `aiu --json` or `aiu resets codex:work --json`.
 
 Enabling this setting authorizes automatic consumption of banked resets. A
 successful reset refreshes eligible five-hour and weekly Codex usage windows and

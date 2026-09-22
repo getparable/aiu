@@ -229,14 +229,10 @@ func frontendCommand(ctx context.Context, cfg *core.Config, opts *options, comma
 		}
 		return result.Message, nil
 	case "auto-reset":
-		enabled := opts.autoResetEnabled == "true"
-		if err := cfg.SetAutoReset(ctx, selector, opts.provider, enabled); err != nil {
+		if err := cfg.ConfigureAutoReset(ctx, selector, opts.provider, autoResetEnabled(opts), opts.autoResetThreshold); err != nil {
 			return "", err
 		}
-		if enabled {
-			return "auto reset enabled at 1% remaining", nil
-		}
-		return "auto reset disabled", nil
+		return autoResetMessage(opts), nil
 	default:
 		return "", errors.New("unknown frontend command")
 	}

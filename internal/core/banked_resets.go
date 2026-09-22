@@ -21,15 +21,16 @@ import (
 
 // BankedResets describes the credit count and cached credit details for a Codex account.
 type BankedResets struct {
-	AvailableCount  *int                `json:"availableCount"`
-	Credits         []BankedResetCredit `json:"credits"`
-	FetchedAt       string              `json:"fetchedAt,omitempty"`
-	Stale           string              `json:"stale,omitempty"`
-	Error           string              `json:"error,omitempty"`
-	CanRedeem       bool                `json:"canRedeem"`
-	PendingRequest  *BankedResetRequest `json:"pendingRequest,omitempty"`
-	AutoReset       bool                `json:"autoReset"`
-	AutoResetStatus string              `json:"autoResetStatus,omitempty"`
+	AvailableCount            *int                `json:"availableCount"`
+	Credits                   []BankedResetCredit `json:"credits"`
+	FetchedAt                 string              `json:"fetchedAt,omitempty"`
+	Stale                     string              `json:"stale,omitempty"`
+	Error                     string              `json:"error,omitempty"`
+	CanRedeem                 bool                `json:"canRedeem"`
+	PendingRequest            *BankedResetRequest `json:"pendingRequest,omitempty"`
+	AutoReset                 bool                `json:"autoReset"`
+	AutoResetThresholdPercent int                 `json:"autoResetThresholdPercent"`
+	AutoResetStatus           string              `json:"autoResetStatus,omitempty"`
 }
 
 type BankedResetCredit struct {
@@ -77,20 +78,25 @@ type resetState struct {
 	Accounts map[string]*resetAccountState `json:"accounts"`
 }
 type resetAccountState struct {
-	Details            *BankedResets             `json:"details,omitempty"`
-	Pending            *BankedResetRequest       `json:"pending,omitempty"`
-	Completed          map[string]completedReset `json:"completed,omitempty"`
-	AutoEnabled        bool                      `json:"autoEnabled,omitempty"`
-	AutoArmed          bool                      `json:"autoArmed,omitempty"`
-	AutoStatus         string                    `json:"autoStatus,omitempty"`
-	AutoRequestID      string                    `json:"autoRequestId,omitempty"`
-	AutoCreditID       string                    `json:"autoCreditId,omitempty"`
-	LastResetAttemptAt int64                     `json:"lastResetAttemptAt,omitempty"`
-	DetailsAttemptedAt int64                     `json:"detailsAttemptedAt,omitempty"`
+	Details                     *BankedResets             `json:"details,omitempty"`
+	Pending                     *BankedResetRequest       `json:"pending,omitempty"`
+	Completed                   map[string]completedReset `json:"completed,omitempty"`
+	AutoEnabled                 bool                      `json:"autoEnabled,omitempty"`
+	AutoArmed                   bool                      `json:"autoArmed,omitempty"`
+	AutoStatus                  string                    `json:"autoStatus,omitempty"`
+	AutoRequestID               string                    `json:"autoRequestId,omitempty"`
+	AutoCreditID                string                    `json:"autoCreditId,omitempty"`
+	AutoResetThresholdPercent   *int                      `json:"autoResetThresholdPercent,omitempty"`
+	LastResetThresholdPercent   *int                      `json:"lastResetThresholdPercent,omitempty"`
+	PendingThresholdPercent     *int                      `json:"pendingThresholdPercent,omitempty"`
+	AutoRequestThresholdPercent *int                      `json:"autoRequestThresholdPercent,omitempty"`
+	LastResetAttemptAt          int64                     `json:"lastResetAttemptAt,omitempty"`
+	DetailsAttemptedAt          int64                     `json:"detailsAttemptedAt,omitempty"`
 }
 type completedReset struct {
-	CreditID string                `json:"creditId"`
-	Result   BankedResetRedemption `json:"result"`
+	CreditID         string                `json:"creditId"`
+	Result           BankedResetRedemption `json:"result"`
+	ThresholdPercent *int                  `json:"thresholdPercent,omitempty"`
 }
 
 var uuidPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -135,6 +141,13 @@ func resetAccount(s *resetState, key string) *resetAccountState {
 	return a
 }
 
+func effectiveAutoResetThreshold(a *resetAccountState) int {
+	if a == nil || a.AutoResetThresholdPercent == nil {
+		return 1
+	}
+	return *a.AutoResetThresholdPercent
+}
+
 func countFromUsage(raw json.RawMessage) *int {
 	var v struct {
 		Count *struct {
@@ -149,7 +162,7 @@ func countFromUsage(raw json.RawMessage) *int {
 }
 
 func (c *Config) cachedBankedResets(r *Record, usage json.RawMessage, stale string) *BankedResets {
-	out := &BankedResets{AvailableCount: nil, Credits: nil, Stale: stale}
+	out := &BankedResets{AvailableCount: nil, Credits: nil, Stale: stale, AutoResetThresholdPercent: 1}
 	var detailAt int64
 	err := withFileLock(c.resetLockPath(), func() error {
 		s, err := c.loadResetState()
@@ -174,6 +187,12 @@ func (c *Config) cachedBankedResets(r *Record, usage json.RawMessage, stale stri
 		if a := s.Accounts[r.StoreKey()]; a != nil {
 			out.PendingRequest = a.Pending
 			out.AutoReset, out.AutoResetStatus = a.AutoEnabled, a.AutoStatus
+			out.AutoResetThresholdPercent = effectiveAutoResetThreshold(a)
+			if out.AutoResetThresholdPercent < 0 || out.AutoResetThresholdPercent > 99 {
+				out.Error = "invalid stored auto-reset threshold; update settings before automatic redemption"
+				out.AutoResetStatus = out.Error
+				out.AutoResetThresholdPercent = 1
+			}
 		}
 		return nil
 	})
@@ -196,8 +215,19 @@ func (c *Config) cachedBankedResets(r *Record, usage json.RawMessage, stale stri
 	return out
 }
 
-// SetAutoReset enables or disables the per-account automatic reset preference.
+// SetAutoReset preserves the configured threshold while changing the enabled flag.
 func (c *Config) SetAutoReset(ctx context.Context, target string, provider Provider, enabled bool) error {
+	return c.ConfigureAutoReset(ctx, target, provider, &enabled, nil)
+}
+
+// ConfigureAutoReset applies only the supplied per-account settings atomically.
+func (c *Config) ConfigureAutoReset(ctx context.Context, target string, provider Provider, enabled *bool, thresholdPercent *int) error {
+	if enabled == nil && thresholdPercent == nil {
+		return errors.New("at least one auto-reset setting is required")
+	}
+	if thresholdPercent != nil && (*thresholdPercent < 0 || *thresholdPercent > 99) {
+		return errors.New("auto-reset threshold must be between 0 and 99 percent remaining")
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -218,13 +248,17 @@ func (c *Config) SetAutoReset(ctx context.Context, target string, provider Provi
 	return withFileLock(c.resetAccountLockPath(key), func() error {
 		return c.withResetState(func(s *resetState) error {
 			a := resetAccount(s, key)
-			if enabled {
+			if thresholdPercent != nil {
+				v := *thresholdPercent
+				a.AutoResetThresholdPercent = &v
+			}
+			if enabled != nil && *enabled {
 				a.AutoEnabled = true
 				if a.AutoRequestID == "" && a.Pending == nil {
 					a.AutoArmed = true
 					a.AutoStatus = "waiting for fresh usage"
 				}
-			} else {
+			} else if enabled != nil {
 				a.AutoEnabled = false
 				a.AutoArmed = false
 				a.AutoStatus = "disabled"
@@ -234,7 +268,7 @@ func (c *Config) SetAutoReset(ctx context.Context, target string, provider Provi
 	})
 }
 
-func usageResetThreshold(raw json.RawMessage) (high, triggerKnown, allBelow bool) {
+func usageThreshold(raw json.RawMessage, triggerPercent, rearmPercent int) (high, triggerKnown, allRecovered bool) {
 	var v struct {
 		RateLimit json.RawMessage `json:"rate_limit"`
 	}
@@ -245,7 +279,7 @@ func usageResetThreshold(raw json.RawMessage) (high, triggerKnown, allBelow bool
 	if json.Unmarshal(v.RateLimit, &limits) != nil {
 		return false, false, false
 	}
-	known, below := false, true
+	known, recovered := false, true
 	for _, key := range []string{"primary_window", "secondary_window"} {
 		b, exists := limits[key]
 		if !exists || string(b) == "null" {
@@ -255,27 +289,32 @@ func usageResetThreshold(raw json.RawMessage) (high, triggerKnown, allBelow bool
 			Used *float64 `json:"used_percent"`
 		}
 		if json.Unmarshal(b, &window) != nil || window.Used == nil {
-			below = false
+			recovered = false
 			continue
 		}
 		n := *window.Used
 		if math.IsNaN(n) || math.IsInf(n, 0) || n < 0 || n > 100 {
-			below = false
+			recovered = false
 			continue
 		}
 		known = true
-		if n >= 99 {
+		if n >= float64(100-triggerPercent) {
 			high = true
-			below = false
+		}
+		if n >= float64(100-rearmPercent) {
+			recovered = false
 		}
 	}
-	return high, known, known && below
+	return high, known, known && recovered
+}
+
+func usageResetThreshold(raw json.RawMessage) (high, known, belowDefault bool) {
+	return usageThreshold(raw, 1, 1)
 }
 
 // maybeAutoReset runs only after a fresh successful usage response. Its per-account
 // lock serializes preference changes, concurrent Collect calls, and redemption.
 func (c *Config) maybeAutoReset(ctx context.Context, r *Record, usage json.RawMessage, usageStartedAt int64) {
-	high, known, belowAll := usageResetThreshold(usage)
 	count := countFromUsage(usage)
 	_ = withFileLock(c.resetAccountLockPath(r.StoreKey()), func() error {
 		var req *BankedResetRequest
@@ -285,11 +324,28 @@ func (c *Config) maybeAutoReset(ctx context.Context, r *Record, usage json.RawMe
 			if a == nil || !a.AutoEnabled {
 				return nil
 			}
+			threshold := effectiveAutoResetThreshold(a)
+			if threshold < 0 || threshold > 99 {
+				a.AutoStatus = "invalid stored auto-reset threshold; update settings before automatic redemption"
+				return nil
+			}
+			attemptThreshold := 1
+			if a.LastResetThresholdPercent != nil {
+				attemptThreshold = *a.LastResetThresholdPercent
+			}
+			high, known, _ := usageThreshold(usage, threshold, threshold)
+			_, _, recoveredBoth := usageThreshold(usage, threshold, max(threshold, attemptThreshold))
 			if a.AutoRequestID != "" {
 				if done, ok := a.Completed[a.AutoRequestID]; ok && done.CreditID == a.AutoCreditID {
-					if belowAll && usageStartedAt > a.LastResetAttemptAt {
+					rearmThreshold := attemptThreshold
+					if done.ThresholdPercent != nil {
+						rearmThreshold = *done.ThresholdPercent
+					}
+					_, _, recoveredBoth = usageThreshold(usage, threshold, max(threshold, rearmThreshold))
+					if recoveredBoth && usageStartedAt > a.LastResetAttemptAt {
 						a.AutoRequestID = ""
 						a.AutoCreditID = ""
+						a.AutoRequestThresholdPercent = nil
 						a.AutoArmed = true
 						a.AutoStatus = "armed"
 					} else {
@@ -325,10 +381,11 @@ func (c *Config) maybeAutoReset(ctx context.Context, r *Record, usage json.RawMe
 				return nil
 			}
 			if !high {
-				if belowAll {
+				if recoveredBoth {
 					a.AutoArmed = true
 					a.AutoRequestID = ""
 					a.AutoCreditID = ""
+					a.AutoRequestThresholdPercent = nil
 					a.AutoStatus = "armed"
 				}
 				return nil
@@ -344,7 +401,7 @@ func (c *Config) maybeAutoReset(ctx context.Context, r *Record, usage json.RawMe
 			a.Details.AvailableCount = &countCopy
 			if !a.AutoArmed {
 				if a.AutoStatus == "" {
-					a.AutoStatus = "waiting for usage to recover below 99%"
+					a.AutoStatus = "waiting for usage to recover above the configured remaining threshold"
 				}
 				return nil
 			}
@@ -356,6 +413,8 @@ func (c *Config) maybeAutoReset(ctx context.Context, r *Record, usage json.RawMe
 			a.AutoArmed = false
 			a.AutoRequestID = id
 			a.AutoCreditID = ""
+			v := threshold
+			a.AutoRequestThresholdPercent = &v
 			a.AutoStatus = "redeeming reset"
 			req = &BankedResetRequest{RequestID: id}
 			shouldRedeem = true
@@ -506,6 +565,7 @@ func (c *Config) listBankedResets(ctx context.Context, r *Record) (*BankedResets
 		a := resetAccount(s, r.StoreKey())
 		d.PendingRequest = a.Pending
 		d.AutoReset, d.AutoResetStatus = a.AutoEnabled, a.AutoStatus
+		d.AutoResetThresholdPercent = effectiveAutoResetThreshold(a)
 		a.Details = d
 		return nil
 	})
@@ -731,6 +791,14 @@ func (c *Config) consumeBankedReset(ctx context.Context, target string, provider
 			}
 		}
 		a.Pending = &BankedResetRequest{RequestID: requestID, CreditID: creditID}
+		threshold := effectiveAutoResetThreshold(a)
+		if a.AutoRequestID == requestID {
+			threshold = 1 // legacy auto intent without a captured threshold
+			if a.AutoRequestThresholdPercent != nil {
+				threshold = *a.AutoRequestThresholdPercent
+			}
+		}
+		a.PendingThresholdPercent = &threshold
 		newPending = true
 		return nil
 	})
@@ -745,6 +813,7 @@ func (c *Config) consumeBankedReset(ctx context.Context, target string, provider
 			_ = c.withResetState(func(s *resetState) error {
 				if a := s.Accounts[key]; a != nil && a.Pending != nil && a.Pending.RequestID == requestID && a.Pending.CreditID == creditID {
 					a.Pending = nil
+					a.PendingThresholdPercent = nil
 				}
 				return nil
 			})
@@ -758,12 +827,25 @@ func (c *Config) consumeBankedReset(ctx context.Context, target string, provider
 			return errors.New("pending reset intent changed before request dispatch")
 		}
 		a.LastResetAttemptAt = dispatchAt
+		threshold := effectiveAutoResetThreshold(a)
+		if a.PendingThresholdPercent == nil {
+			if a.AutoRequestID == requestID && a.AutoRequestThresholdPercent != nil {
+				threshold = *a.AutoRequestThresholdPercent
+			} else if !newPending {
+				threshold = 1
+			}
+			v := threshold
+			a.PendingThresholdPercent = &v
+		}
+		threshold = *a.PendingThresholdPercent
+		a.LastResetThresholdPercent = &threshold
 		return nil
 	}); err != nil {
 		if newPending {
 			_ = c.withResetState(func(s *resetState) error {
 				if a := s.Accounts[key]; a != nil && a.Pending != nil && a.Pending.RequestID == requestID && a.Pending.CreditID == creditID {
 					a.Pending = nil
+					a.PendingThresholdPercent = nil
 				}
 				return nil
 			})
@@ -783,6 +865,7 @@ func (c *Config) consumeBankedReset(ctx context.Context, target string, provider
 			_ = c.withResetState(func(s *resetState) error {
 				if a := s.Accounts[key]; a != nil && a.Pending != nil && a.Pending.RequestID == requestID && a.Pending.CreditID == creditID {
 					a.Pending = nil
+					a.PendingThresholdPercent = nil
 				}
 				return nil
 			})
@@ -835,15 +918,22 @@ func (c *Config) consumeBankedReset(ctx context.Context, target string, provider
 	if err := c.withResetState(func(s *resetState) error {
 		a := resetAccount(s, key)
 		a.Pending = nil
+		a.PendingThresholdPercent = nil
 		if a.Completed == nil {
 			a.Completed = map[string]completedReset{}
 		}
-		a.Completed[requestID] = completedReset{CreditID: creditID, Result: *out}
+		var issuedThreshold *int
+		if a.LastResetThresholdPercent != nil {
+			v := *a.LastResetThresholdPercent
+			issuedThreshold = &v
+		}
+		a.Completed[requestID] = completedReset{CreditID: creditID, Result: *out, ThresholdPercent: issuedThreshold}
 		// Any confirmed spend must pass through a fresh below-threshold usage
 		// observation before automation can spend again, including manual spends.
 		a.AutoArmed = false
 		a.AutoRequestID = requestID
 		a.AutoCreditID = creditID
+		a.AutoRequestThresholdPercent = nil
 		a.AutoStatus = "reset result: " + out.Code
 		a.Details = nil
 		return nil

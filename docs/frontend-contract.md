@@ -51,7 +51,10 @@ Codex rows add an optional `bankedResets` object: `availableCount` is nullable,
 `credits` is nullable when details have not been fetched, and `canRedeem` is Go's
 decision. Each credit contains `id`, `resetType`, `status`, `grantedAt`, `expiresAt`,
 `title`, `description`, and `canRedeem`. Optional strings `fetchedAt`, `stale`, and
-`error` describe cached details. `autoReset` defaults false; `autoResetStatus`
+`error` describe cached details. `autoReset` defaults false;
+`autoResetThresholdPercent` is the per-account whole remaining percentage (0–99),
+defaulting to 1 when absent in an older response. Explicit zero is valid.
+`autoResetStatus`
 explains the current automation state. `pendingRequest: {requestId, creditId?}`
 is authoritative for retrying an uncertain redemption. Unknown counts and dates
 must not be rendered as zero or an invented expiry.
@@ -60,6 +63,7 @@ must not be rendered as zero or an invented expiry.
 aiu frontend resets codex:person@example.test#account-id --contract-version 1
 aiu frontend reset codex:person@example.test#account-id --yes --request-id UUID --contract-version 1
 aiu frontend auto-reset codex:person@example.test#account-id --enabled true --contract-version 1
+aiu frontend auto-reset codex:person@example.test#account-id --threshold 5 --contract-version 1
 ```
 
 These commands require one selector and advertise separate hello capabilities.
@@ -68,8 +72,12 @@ one UUID per confirmed intent and retain it for every retry, including after
 network failure. Optional `--credit-id ID` selects a credit; omission lets the
 provider choose. Never change that selection while retrying the same ID. A Go
 pending request takes precedence over a local intent that was never accepted.
-`auto-reset` requires `--enabled true|false`; the frontend displays the saved
-setting and never implements its own threshold or calls the consume route itself.
+`auto-reset` requires `--enabled true|false`, `--threshold N`, or both. Omitting a
+setting preserves it; supplied settings are validated and saved atomically.
+The frontend displays the saved settings and never implements the trigger policy
+or calls the consume route itself. Editing a percentage does not submit a command
+until the user saves it. Preferences never clear pending requests or the recovery
+requirement from a prior attempt.
 See [reset policy and recovery](banked-resets.md). Status uses the usage response's
 embedded balance plus cached details; it does not issue an extra listing request
 on every poll.

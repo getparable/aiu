@@ -65,6 +65,7 @@
       "fetchedAt": "2030-01-01T00:00:00Z",
       "canRedeem": true,
       "autoReset": true,
+      "autoResetThresholdPercent": 5,
       "autoResetStatus": "waiting for fresh usage"
     },
     "rank": 0,
@@ -96,7 +97,8 @@
       "pendingRequest": {
         "requestId": "12345678-1234-4234-8234-123456789abc"
       },
-      "autoReset": false
+      "autoReset": false,
+      "autoResetThresholdPercent": 0
     },
     "rank": 1,
     "note": "unavailable"

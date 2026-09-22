@@ -22,6 +22,10 @@ func TestResetCommandValidation(t *testing.T) {
 		{"reset", "codex:work", "--yes=false"}, {"status", "--yes"},
 		{"auto-reset", "codex:work"}, {"auto-reset", "codex:work", "--enabled", "yes"},
 		{"resets", "codex:work", "--enabled", "true"}, {"resets", "codex:work", "--request-id", "unused"},
+		{"resets", "codex:work", "--threshold", "5"}, {"status", "--threshold=5"},
+		{"auto-reset", "codex:work", "--threshold", "-1"}, {"auto-reset", "codex:work", "--threshold=100"},
+		{"auto-reset", "codex:work", "--threshold=1.5"}, {"auto-reset", "codex:work", "--threshold="},
+		{"auto-reset", "codex:work", "--threshold=9999999999999999999999999"}, {"auto-reset", "codex:work", "--threshold"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			opts, err := parse(args)
@@ -36,6 +40,8 @@ func TestResetCommandValidation(t *testing.T) {
 	for _, args := range [][]string{
 		{"resets", "codex:work"}, {"reset", "codex:work", "--yes"},
 		{"auto-reset", "codex:work", "--enabled=true"}, {"auto-reset", "codex:work", "--enabled", "false"},
+		{"auto-reset", "codex:work", "--threshold=0"}, {"auto-reset", "codex:work", "--threshold", "99"},
+		{"auto-reset", "codex:work", "--enabled", "true", "--threshold", "5"},
 	} {
 		opts, err := parse(args)
 		if err == nil {
@@ -127,12 +133,41 @@ func TestFrontendBankedResetContract(t *testing.T) {
 		t.Fatalf("missing reset presentation: %+v", listed)
 	}
 	bank := listed.Accounts[0].BankedResets
-	if bank.AvailableCount == nil || *bank.AvailableCount != 2 || bank.AutoReset || !bank.CanRedeem {
+	if bank.AvailableCount == nil || *bank.AvailableCount != 2 || bank.AutoReset || !bank.CanRedeem || bank.AutoResetThresholdPercent != 1 {
 		t.Fatalf("unexpected reset state: %+v", bank)
 	}
+	configured := invoke("auto-reset", selector, "--threshold", "5", "--provider", "codex")
+	if len(configured.Accounts) != 1 || configured.Accounts[0].BankedResets.AutoReset || configured.Accounts[0].BankedResets.AutoResetThresholdPercent != 5 {
+		t.Fatalf("threshold-only edit enabled the account or was not saved: %+v", configured)
+	}
 	enabled := invoke("auto-reset", selector, "--enabled", "true", "--provider", "codex")
-	if len(enabled.Accounts) != 1 || !enabled.Accounts[0].BankedResets.AutoReset {
+	if len(enabled.Accounts) != 1 || !enabled.Accounts[0].BankedResets.AutoReset || enabled.Accounts[0].BankedResets.AutoResetThresholdPercent != 5 {
 		t.Fatalf("toggle not in snapshot: %+v", enabled)
+	}
+	zero := invoke("auto-reset", selector, "--threshold", "0", "--provider", "codex")
+	if len(zero.Accounts) != 1 || !zero.Accounts[0].BankedResets.AutoReset || zero.Accounts[0].BankedResets.AutoResetThresholdPercent != 0 {
+		t.Fatalf("zero was not retained, or threshold-only edit disabled automation: %+v", zero)
+	}
+	combined := invoke("auto-reset", selector, "--enabled", "false", "--threshold", "9", "--provider", "codex")
+	if len(combined.Accounts) != 1 || combined.Accounts[0].BankedResets.AutoReset || combined.Accounts[0].BankedResets.AutoResetThresholdPercent != 9 {
+		t.Fatalf("combined update not in snapshot: %+v", combined)
+	}
+	// The terminal JSON acknowledgment contains only the supplied settings, so a
+	// threshold-only edit cannot misrepresent the preserved enabled state.
+	opts, err := parse([]string{"auto-reset", selector, "--threshold", "0", "--json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var terminal bytes.Buffer
+	if err := (&app{cfg: cfg, opts: opts, stdout: &terminal}).autoReset(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var acknowledgment map[string]any
+	if err := json.Unmarshal(terminal.Bytes(), &acknowledgment); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := acknowledgment["autoReset"]; exists || acknowledgment["autoResetThresholdPercent"] != float64(0) {
+		t.Fatalf("wrong partial acknowledgment: %s", terminal.String())
 	}
 	if posts != 0 {
 		t.Fatal("enabling at healthy usage spent a credit")
