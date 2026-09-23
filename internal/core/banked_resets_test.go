@@ -36,7 +36,9 @@ func TestListAndConsumeBankedResetSyntheticAPI(t *testing.T) {
 		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/credits":
-			io.WriteString(w, `{"available_count":3,"credits":[{"id":"credit-1","reset_type":"codex_rate_limits","status":"available","granted_at":"2026-09-01T00:00:00Z","expires_at":null,"title":null,"description":null}],"total_earned_count":5}`)
+			if _, err := io.WriteString(w, `{"available_count":3,"credits":[{"id":"credit-1","reset_type":"codex_rate_limits","status":"available","granted_at":"2026-09-01T00:00:00Z","expires_at":null,"title":null,"description":null}],"total_earned_count":5}`); err != nil {
+				t.Error(err)
+			}
 		case r.Method == http.MethodPost && r.URL.Path == "/credits/consume":
 			posts++
 			var payload map[string]string
@@ -46,7 +48,9 @@ func TestListAndConsumeBankedResetSyntheticAPI(t *testing.T) {
 			if payload["redeem_request_id"] != "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" || payload["credit_id"] != "credit-1" {
 				t.Errorf("wrong payload: %#v", payload)
 			}
-			io.WriteString(w, `{"code":"reset","windows_reset":2}`)
+			if _, err := io.WriteString(w, `{"code":"reset","windows_reset":2}`); err != nil {
+				t.Error(err)
+			}
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(404)
@@ -80,6 +84,58 @@ func TestListAndConsumeBankedResetSyntheticAPI(t *testing.T) {
 	}
 	if _, err := c.ConsumeBankedReset(context.Background(), r.Email+"#"+r.OrgUUID, Codex, "different-credit", request); err == nil || !strings.Contains(err.Error(), "different credit") {
 		t.Fatalf("expected reused request ID conflict, got %v", err)
+	}
+}
+
+func TestListBankedResetsDoesNotOfferSpendWhilePending(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("unexpected request %s", r.Method)
+		}
+		if _, err := io.WriteString(w, `{"available_count":1,"credits":[]}`); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer server.Close()
+	c := &Config{Dir: filepath.Join(t.TempDir(), "aiu"), CodexResetCreditsURL: server.URL, HTTP: server.Client(), Now: time.Now, Warn: func(string) {}}
+	r := resetTestAccount(t, c)
+	requestID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	if err := c.withResetState(func(s *resetState) error {
+		resetAccount(s, r.StoreKey()).Pending = &BankedResetRequest{RequestID: requestID}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	view, err := c.ListBankedResets(context.Background(), r.Email+"#"+r.OrgUUID, Codex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.AvailableCount == nil || *view.AvailableCount != 1 || view.PendingRequest == nil || view.PendingRequest.RequestID != requestID || view.CanRedeem {
+		t.Fatalf("fresh details offered a second spend while a request is pending: %+v", view)
+	}
+}
+
+func TestListBankedResetsDoesNotOfferSpendAfter429(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "3600")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+	c := &Config{Dir: filepath.Join(t.TempDir(), "aiu"), CodexResetCreditsURL: server.URL, HTTP: server.Client(), Now: time.Now, Warn: func(string) {}}
+	r := resetTestAccount(t, c)
+	if err := c.withResetState(func(s *resetState) error {
+		n := 1
+		resetAccount(s, r.StoreKey()).Details = &BankedResets{AvailableCount: &n}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	view, err := c.ListBankedResets(context.Background(), r.Email+"#"+r.OrgUUID, Codex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.AvailableCount == nil || *view.AvailableCount != 1 || view.CanRedeem {
+		t.Fatalf("429 response offered a spend during provider cooldown: %+v", view)
 	}
 }
 
@@ -150,7 +206,9 @@ func TestAutoResetUsesProviderSelectedCreditAndLatches(t *testing.T) {
 		if payload["credit_id"] != "" {
 			t.Errorf("auto reset must let provider select credit: %#v", payload)
 		}
-		io.WriteString(w, `{"code":"reset","windows_reset":1}`)
+		if _, err := io.WriteString(w, `{"code":"reset","windows_reset":1}`); err != nil {
+			t.Error(err)
+		}
 	}))
 	defer server.Close()
 	c := &Config{Dir: filepath.Join(t.TempDir(), "aiu"), CodexResetCreditsURL: server.URL, HTTP: server.Client(), Now: time.Now, Warn: func(string) {}}
@@ -187,7 +245,13 @@ func TestAutoResetUsesProviderSelectedCreditAndLatches(t *testing.T) {
 func TestConsumePersistsOutcomeAfterRequestCancelsCaller(t *testing.T) {
 	var cancel context.CancelFunc
 	posts := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { posts++; cancel(); io.WriteString(w, `{"code":"reset"}`) }))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		cancel()
+		if _, err := io.WriteString(w, `{"code":"reset"}`); err != nil {
+			t.Error(err)
+		}
+	}))
 	defer server.Close()
 	c := &Config{Dir: filepath.Join(t.TempDir(), "aiu"), CodexResetCreditsURL: server.URL, HTTP: server.Client(), Now: time.Now, Warn: func(string) {}}
 	r := resetTestAccount(t, c)
@@ -328,7 +392,9 @@ func TestThresholdChangesKeepPendingAndOriginalRetryThreshold(t *testing.T) {
 			w.WriteHeader(500)
 			return
 		}
-		io.WriteString(w, `{"code":"reset"}`)
+		if _, err := io.WriteString(w, `{"code":"reset"}`); err != nil {
+			t.Error(err)
+		}
 	}))
 	defer server.Close()
 	c := &Config{Dir: filepath.Join(t.TempDir(), "aiu"), CodexResetCreditsURL: server.URL, HTTP: server.Client(), Now: time.Now, Warn: func(string) {}}
@@ -435,7 +501,9 @@ func TestAutoResetConfiguredThresholdControlsActualPOSTBoundary(t *testing.T) {
 					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 				}
 				posts++
-				io.WriteString(w, `{"code":"reset"}`)
+				if _, err := io.WriteString(w, `{"code":"reset"}`); err != nil {
+					t.Error(err)
+				}
 			}))
 			defer server.Close()
 			c := &Config{Dir: filepath.Join(t.TempDir(), "aiu"), CodexResetCreditsURL: server.URL, HTTP: server.Client(), Now: time.Now, Warn: func(string) {}}
@@ -463,7 +531,9 @@ func TestRecoveredAutoIntentKeepsThresholdCapturedBeforeCrash(t *testing.T) {
 	posts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		posts++
-		io.WriteString(w, `{"code":"reset"}`)
+		if _, err := io.WriteString(w, `{"code":"reset"}`); err != nil {
+			t.Error(err)
+		}
 	}))
 	defer server.Close()
 	c := &Config{Dir: filepath.Join(t.TempDir(), "aiu"), CodexResetCreditsURL: server.URL, HTTP: server.Client(), Now: time.Now, Warn: func(string) {}}
@@ -498,7 +568,11 @@ func TestRecoveredAutoIntentKeepsThresholdCapturedBeforeCrash(t *testing.T) {
 }
 
 func TestLegacyAutoIntentUsesDefaultThresholdAfterPreferenceEdit(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, `{"code":"reset"}`) }))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.WriteString(w, `{"code":"reset"}`); err != nil {
+			t.Error(err)
+		}
+	}))
 	defer server.Close()
 	c := &Config{Dir: filepath.Join(t.TempDir(), "aiu"), CodexResetCreditsURL: server.URL, HTTP: server.Client(), Now: time.Now, Warn: func(string) {}}
 	r := resetTestAccount(t, c)

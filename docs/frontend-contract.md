@@ -58,6 +58,8 @@ defaulting to 1 when absent in an older response. Explicit zero is valid.
 explains the current automation state. `pendingRequest: {requestId, creditId?}`
 is authoritative for retrying an uncertain redemption. Unknown counts and dates
 must not be rendered as zero or an invented expiry.
+The macOS menu bar app reads this object from `aiu --json` and sends actions
+through its bundled CLI. The independent Rust frontend uses JSONL commands.
 
 ```text
 aiu frontend resets codex:person@example.test#account-id --contract-version 1

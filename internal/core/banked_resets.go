@@ -455,12 +455,12 @@ func (c *Config) resolveCodexRecord(target string, provider Provider) (*Record, 
 	for _, r := range rs {
 		if r.Email == e.Email && r.OrgUUID == e.Org && r.Provider == Codex {
 			if r.Missing {
-				return nil, errors.New("Codex token is missing; sign in again for this account")
+				return nil, errors.New("codex token is missing; sign in again for this account")
 			}
 			return r, nil
 		}
 	}
-	return nil, errors.New("Codex token is missing; sign in again for this account")
+	return nil, errors.New("codex token is missing; sign in again for this account")
 }
 
 func (c *Config) codexResetRecord(ctx context.Context, target string, provider Provider) (*Record, error) {
@@ -534,6 +534,7 @@ func (c *Config) listBankedResets(ctx context.Context, r *Record) (*BankedResets
 	if res.Status == 429 {
 		c.recordReset429(r.StoreKey(), res)
 		out.Error = "rate limited"
+		out.CanRedeem = false
 		return out, c.persistResetListError(r.StoreKey(), out.Error)
 	}
 	if !res.ok() {
@@ -560,10 +561,11 @@ func (c *Config) listBankedResets(ctx context.Context, r *Record) (*BankedResets
 		credit.CanRedeem = resetCreditUsable(credit, c.now())
 		credits = append(credits, credit)
 	}
-	d := &BankedResets{AvailableCount: wire.AvailableCount, Credits: credits, FetchedAt: c.now().UTC().Format(time.RFC3339), CanRedeem: *wire.AvailableCount > 0}
+	d := &BankedResets{AvailableCount: wire.AvailableCount, Credits: credits, FetchedAt: c.now().UTC().Format(time.RFC3339)}
 	err := c.withResetState(func(s *resetState) error {
 		a := resetAccount(s, r.StoreKey())
 		d.PendingRequest = a.Pending
+		d.CanRedeem = *wire.AvailableCount > 0 && a.Pending == nil
 		d.AutoReset, d.AutoResetStatus = a.AutoEnabled, a.AutoStatus
 		d.AutoResetThresholdPercent = effectiveAutoResetThreshold(a)
 		a.Details = d
@@ -993,11 +995,14 @@ func (c *Config) resetRequest(ctx context.Context, method, endpoint string, head
 	if err != nil {
 		return nil, errors.New(Redact(err.Error()))
 	}
-	defer res.Body.Close()
 	const limit = 4 << 20
 	data, err := io.ReadAll(io.LimitReader(res.Body, limit+1))
+	closeErr := res.Body.Close()
 	if err != nil {
 		return nil, err
+	}
+	if closeErr != nil {
+		return nil, closeErr
 	}
 	if len(data) > limit {
 		return nil, errors.New("reset endpoint response exceeds the size limit")

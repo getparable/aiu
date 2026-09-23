@@ -64,7 +64,9 @@ func TestFrontendBankedResetContract(t *testing.T) {
 		switch {
 		case r.Method == "GET" && r.URL.Path == "/credits":
 			gets++
-			io.WriteString(w, `{"available_count":2,"credits":[{"id":"credit-1","reset_type":"codex_rate_limits","status":"available","granted_at":"2030-01-01T00:00:00Z","expires_at":null}]}`)
+			if _, err := io.WriteString(w, `{"available_count":2,"credits":[{"id":"credit-1","reset_type":"codex_rate_limits","status":"available","granted_at":"2030-01-01T00:00:00Z","expires_at":null}]}`); err != nil {
+				t.Error(err)
+			}
 		case r.Method == "POST" && r.URL.Path == "/credits/consume":
 			posts++
 			var payload map[string]string
@@ -74,9 +76,13 @@ func TestFrontendBankedResetContract(t *testing.T) {
 			if len(payload) != 2 || payload["redeem_request_id"] != requestID || payload["credit_id"] != "credit-1" {
 				t.Errorf("wrong payload: %v", payload)
 			}
-			io.WriteString(w, `{"code":"reset","windows_reset":2}`)
+			if _, err := io.WriteString(w, `{"code":"reset","windows_reset":2}`); err != nil {
+				t.Error(err)
+			}
 		case r.Method == "GET" && r.URL.Path == "/usage":
-			io.WriteString(w, `{"rate_limit":{"primary_window":{"used_percent":30,"limit_window_seconds":18000},"secondary_window":null},"rate_limit_reset_credits":{"available_count":2}}`)
+			if _, err := io.WriteString(w, `{"rate_limit":{"primary_window":{"used_percent":30,"limit_window_seconds":18000},"secondary_window":null},"rate_limit_reset_credits":{"available_count":2}}`); err != nil {
+				t.Error(err)
+			}
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(500)
@@ -111,8 +117,14 @@ func TestFrontendBankedResetContract(t *testing.T) {
 			t.Fatal(err)
 		}
 		in, parent := io.Pipe()
-		defer in.Close()
-		defer parent.Close()
+		defer func() {
+			if err := in.Close(); err != nil {
+				t.Error(err)
+			}
+			if err := parent.Close(); err != nil {
+				t.Error(err)
+			}
+		}()
 		var out bytes.Buffer
 		exit := runFrontend(opts, cfg, in, &out)
 		if strings.Contains(out.String(), "synthetic-only-token") || strings.Contains(out.String(), "accessToken") {

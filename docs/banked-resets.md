@@ -3,7 +3,7 @@
 AIU can display and redeem banked Codex resets for a tracked ChatGPT account.
 The Go backend owns all requests, preferences, and redemption receipts. The
 independent Rust frontend presents those results through the version 1 contract;
-the Swift frontend continues to decode the existing account fields unchanged.
+the macOS menu bar app displays the same balance and provides reset controls.
 
 ```sh
 aiu resets codex:work
@@ -24,7 +24,7 @@ zero, and the balance can exceed the number of credit details returned.
 
 Auto reset is **off by default, per account**, with a default threshold of **1%
 remaining**. Choose any whole remaining percentage from **0 through 99** with
-`--threshold N` or the Rust panel's threshold editor and **Save threshold** button.
+`--threshold N` or the desktop panels' threshold editor and **Save threshold** button.
 Zero means fully exhausted; 5 means reset at 5% remaining or less (95% used or
 more). A threshold-only change preserves whether automation is enabled, and an
 enable/disable-only change preserves the saved percentage. Both settings can be
@@ -74,7 +74,7 @@ aiu reset codex:work --yes --request-id UUID
 ```
 
 If the CLI generated the request ID, retrieve the pending request with
-`aiu resets codex:work --json`. The Rust panel offers **Retry same request** and
+`aiu resets codex:work --json`. The desktop panels offer **Retry same request** and
 retains this intent across errors. A different intent cannot replace an unresolved
 one. Completed receipts prevent local duplicate POSTs; the provider request ID
 also protects retries after an ambiguous network or persistence failure.

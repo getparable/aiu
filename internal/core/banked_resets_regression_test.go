@@ -84,10 +84,14 @@ func TestLateUsageResponseCannotRestorePreResetCache(t *testing.T) {
 			close(usageStarted)
 			<-allowUsageResponse
 			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `{"rate_limit":{"primary_window":{"used_percent":100},"secondary_window":{"used_percent":100}},"rate_limit_reset_credits":{"available_count":1}}`)
+			if _, err := io.WriteString(w, `{"rate_limit":{"primary_window":{"used_percent":100},"secondary_window":{"used_percent":100}},"rate_limit_reset_credits":{"available_count":1}}`); err != nil {
+				t.Error(err)
+			}
 		case r.Method == http.MethodPost && r.URL.Path == "/credits/consume":
 			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `{"code":"reset","windows_reset":2}`)
+			if _, err := io.WriteString(w, `{"code":"reset","windows_reset":2}`); err != nil {
+				t.Error(err)
+			}
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -143,11 +147,15 @@ func TestResetDetailsReadDoesNotStarveUsageFetch(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/credits":
 			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `{"available_count":1,"credits":[],"total_earned_count":1}`)
+			if _, err := io.WriteString(w, `{"available_count":1,"credits":[],"total_earned_count":1}`); err != nil {
+				t.Error(err)
+			}
 		case r.Method == http.MethodGet && r.URL.Path == "/usage":
 			usageGets++
 			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `{"rate_limit":{"primary_window":{"used_percent":15},"secondary_window":{"used_percent":20}},"rate_limit_reset_credits":{"available_count":1}}`)
+			if _, err := io.WriteString(w, `{"rate_limit":{"primary_window":{"used_percent":15},"secondary_window":{"used_percent":20}},"rate_limit_reset_credits":{"available_count":1}}`); err != nil {
+				t.Error(err)
+			}
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -299,7 +307,9 @@ func TestConcurrentConsumeAcrossConfigsUsesOneProviderPost(t *testing.T) {
 		close(started)
 		<-release
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"code":"reset","windows_reset":2}`)
+		if _, err := io.WriteString(w, `{"code":"reset","windows_reset":2}`); err != nil {
+			t.Error(err)
+		}
 	}))
 	defer server.Close()
 	dir := filepath.Join(t.TempDir(), "shared")

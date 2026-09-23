@@ -34,6 +34,54 @@ struct LoginHealth: Decodable, Hashable {
     let message: String
 }
 
+struct BankedResetRequest: Decodable, Hashable {
+    let requestId: String
+    let creditId: String?
+}
+
+struct BankedResetCredit: Decodable, Hashable, Identifiable {
+    let id: String
+    let resetType: String
+    let status: String
+    let grantedAt: String
+    let expiresAt: String?
+    let title: String
+    let description: String
+    let canRedeem: Bool
+}
+
+struct BankedResets: Decodable, Hashable {
+    let availableCount: Int?
+    let credits: [BankedResetCredit]?
+    let fetchedAt: String?
+    let stale: String?
+    let error: String?
+    let canRedeem: Bool
+    let pendingRequest: BankedResetRequest?
+    let autoReset: Bool
+    let autoResetThresholdPercent: Int
+    let autoResetStatus: String?
+
+    enum CodingKeys: String, CodingKey {
+        case availableCount, credits, fetchedAt, stale, error, canRedeem
+        case pendingRequest, autoReset, autoResetThresholdPercent, autoResetStatus
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        availableCount = try values.decodeIfPresent(Int.self, forKey: .availableCount)
+        credits = try values.decodeIfPresent([BankedResetCredit].self, forKey: .credits)
+        fetchedAt = try values.decodeIfPresent(String.self, forKey: .fetchedAt)
+        stale = try values.decodeIfPresent(String.self, forKey: .stale)
+        error = try values.decodeIfPresent(String.self, forKey: .error)
+        canRedeem = try values.decodeIfPresent(Bool.self, forKey: .canRedeem) ?? false
+        pendingRequest = try values.decodeIfPresent(BankedResetRequest.self, forKey: .pendingRequest)
+        autoReset = try values.decodeIfPresent(Bool.self, forKey: .autoReset) ?? false
+        autoResetThresholdPercent = try values.decodeIfPresent(Int.self, forKey: .autoResetThresholdPercent) ?? 1
+        autoResetStatus = try values.decodeIfPresent(String.self, forKey: .autoResetStatus)
+    }
+}
+
 struct Account: Decodable, Identifiable, Hashable {
     let provider: String
     let email: String
@@ -64,6 +112,7 @@ struct Account: Decodable, Identifiable, Hashable {
     let recommended: Bool?
     let why: String?
     let allSpent: Bool?
+    let bankedResets: BankedResets?
 
     // The organization is part of the identity: one address can hold several, and a
     // list keyed only by address collapses them into one row.
@@ -108,4 +157,3 @@ enum AIUJSON {
         return decoder
     }
 }
-

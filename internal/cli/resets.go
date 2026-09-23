@@ -40,9 +40,11 @@ func (a *app) resets(ctx context.Context) error {
 	if a.opts.json {
 		return json.NewEncoder(a.stdout).Encode(view)
 	}
-	fmt.Fprintln(a.stdout, a.p.bold("Banked resets · "+a.opts.args[0]))
-	fmt.Fprintln(a.stdout, strings.Join(renderBankedResets(a.p, view, true), "\n"))
-	return nil
+	if _, err := fmt.Fprintln(a.stdout, a.p.bold("Banked resets · "+a.opts.args[0])); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(a.stdout, strings.Join(renderBankedResets(a.p, view, true), "\n"))
+	return err
 }
 
 func (a *app) reset(ctx context.Context) error {
@@ -53,9 +55,11 @@ func (a *app) reset(ctx context.Context) error {
 	if a.opts.json {
 		return json.NewEncoder(a.stdout).Encode(result)
 	}
-	fmt.Fprintln(a.stdout, result.Message)
-	fmt.Fprintln(a.stdout, a.p.dim("Request: "+result.RequestID+". Reuse --request-id to query this same attempt."))
-	return nil
+	if _, err := fmt.Fprintln(a.stdout, result.Message); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(a.stdout, a.p.dim("Request: "+result.RequestID+". Reuse --request-id to query this same attempt."))
+	return err
 }
 
 func (a *app) autoReset(ctx context.Context) error {
@@ -69,8 +73,8 @@ func (a *app) autoReset(ctx context.Context) error {
 			Threshold *int   `json:"autoResetThresholdPercent,omitempty"`
 		}{a.opts.args[0], autoResetEnabled(a.opts), a.opts.autoResetThreshold})
 	}
-	fmt.Fprintln(a.stdout, autoResetMessage(a.opts)+" for "+a.opts.args[0]+". Checks run while AIU collects usage.")
-	return nil
+	_, err := fmt.Fprintln(a.stdout, autoResetMessage(a.opts)+" for "+a.opts.args[0]+". Checks run while AIU collects usage.")
+	return err
 }
 
 func autoResetEnabled(opts *options) *bool {

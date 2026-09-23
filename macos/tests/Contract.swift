@@ -20,11 +20,21 @@ struct ContractTest {
             from: Data(contentsOf: directory.appendingPathComponent("empty.json")))
         precondition(empty.isEmpty)
 
-        // Additive banked-reset fields must not break the existing Swift model.
+        // The Swift panel uses the same reset presentation fields as the Go CLI.
         let banked = try AIUJSON.decoder().decode([Account].self,
             from: Data(contentsOf: directory.appendingPathComponent("banked-resets.json")))
         precondition(banked.count == 2 && banked[0].provider == "codex")
         precondition(banked[0].windows[0].percent == 99 && banked[1].needsLogin)
+        precondition(banked[0].bankedResets?.availableCount == 3)
+        precondition(banked[0].bankedResets?.credits?.first?.id == "synthetic-credit-1")
+        precondition(banked[0].bankedResets?.autoReset == true)
+        precondition(banked[0].bankedResets?.autoResetThresholdPercent == 5)
+        precondition(banked[1].bankedResets?.availableCount == nil)
+        precondition(banked[1].bankedResets?.pendingRequest?.requestId == "12345678-1234-4234-8234-123456789abc")
+        precondition(banked[1].bankedResets?.autoResetThresholdPercent == 0)
+        let olderReset = try AIUJSON.decoder().decode(BankedResets.self,
+            from: Data(#"{"availableCount":null,"credits":null}"#.utf8))
+        precondition(!olderReset.autoReset && olderReset.autoResetThresholdPercent == 1)
 
         for name in ["failure", "cancelled"] {
             let outcome = try AIUJSON.decoder().decode(FrontendOutcome.self,

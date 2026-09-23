@@ -203,7 +203,9 @@ func run(argv []string, cfg *core.Config) int {
 		return 0
 	}
 	if err := validateResetOptions(opts, opts.command); err != nil {
-		fmt.Fprintln(a.stderr, "error: "+err.Error())
+		if _, writeErr := fmt.Fprintln(a.stderr, "error: "+err.Error()); writeErr != nil {
+			return 2
+		}
 		return 2
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
