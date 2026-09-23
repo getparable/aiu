@@ -1,4 +1,4 @@
-VERSION   ?= 0.2.0
+VERSION   ?= 0.3.0
 BUILD     ?= $(shell git rev-list --count HEAD 2>/dev/null || echo 1)
 BUNDLE_ID ?= dev.aiu.menubar
 LDFLAGS    = -s -w -X github.com/getparable/aiu/internal/core.Version=$(VERSION)
