@@ -257,10 +257,12 @@ func isDeadLoginError(msg string) bool { return msg != "" && deadLogin.MatchStri
 const throttleNote = "request throttling by the usage endpoint, not your subscription quota"
 
 type usageResult struct {
-	record    *Record
-	usage     json.RawMessage
-	fetchedAt int64
-	stale     string
+	record      *Record
+	usage       json.RawMessage
+	fetchedAt   int64
+	stale       string
+	fresh       bool
+	attemptedAt int64
 }
 
 func (c *Config) rateLimitedMessage(until int64) string {
@@ -353,7 +355,8 @@ func (c *Config) fetchUsage(ctx context.Context, r *Record, liveClaude *LiveClau
 		}
 		until := now + cooldown.Milliseconds()
 		c.cacheUpdate(key, func(e *cacheEntry) *cacheEntry {
-			e.LimitedUntil, e.Strikes, e.LastLimitedAt, e.LastError = until, strikes, now, "rate limited"
+			until = max(until, e.LimitedUntil)
+			e.LimitedUntil, e.Strikes, e.LastLimitedAt, e.LastError = until, max(strikes, e.Strikes), max(now, e.LastLimitedAt), "rate limited"
 			return e
 		})
 		if e.Usage != nil {
@@ -379,12 +382,33 @@ func (c *Config) fetchUsage(ctx context.Context, r *Record, liveClaude *LiveClau
 	if !json.Valid(res.Body) {
 		return nil, errors.New("usage endpoint returned a non-JSON body")
 	}
-	// A full replace: drops strikes, the cooldown and old errors; only the memory of
-	// a recent 429 carries over.
+	// Replace successful usage, but retain any reset or cooldown recorded while
+	// this request was in flight. An older response cannot clear newer evidence.
+	invalidated, limited := false, false
+	limitedUntil := int64(0)
 	c.cacheUpdate(key, func(old *cacheEntry) *cacheEntry {
-		return &cacheEntry{Usage: res.Body, FetchedAt: now, AttemptedAt: g.claimedAt, LastLimitedAt: old.LastLimitedAt}
+		if old.ResetAt > 0 && old.ResetAt >= g.claimedAt {
+			invalidated = true
+			return old
+		}
+		next := &cacheEntry{Usage: res.Body, FetchedAt: now, AttemptedAt: g.claimedAt, LastLimitedAt: old.LastLimitedAt, ResetAt: old.ResetAt}
+		if old.LimitedUntil > now {
+			limited = true
+			limitedUntil = old.LimitedUntil
+			next.LimitedUntil = old.LimitedUntil
+			next.Strikes = old.Strikes
+			next.LastError = old.LastError
+		}
+		return next
 	})
-	return &usageResult{record: current, usage: res.Body, fetchedAt: now}, nil
+	if invalidated {
+		return &usageResult{record: current, stale: "reset redemption is unresolved; waiting for an authoritative usage refresh", attemptedAt: g.claimedAt}, nil
+	}
+	stale := ""
+	if limited {
+		stale = c.rateLimitedMessage(limitedUntil)
+	}
+	return &usageResult{record: current, usage: res.Body, fetchedAt: now, stale: stale, fresh: !limited, attemptedAt: g.claimedAt}, nil
 }
 
 func (c *Config) usageRequest(ctx context.Context, r *Record) (*apiResponse, error) {
@@ -407,13 +431,14 @@ func sleep(ctx context.Context, d time.Duration) {
 
 // Result is one tracked account with its usage, or why there is none.
 type Result struct {
-	Record     *Record
-	Active     bool
-	Usage      json.RawMessage
-	FetchedAt  int64
-	Stale      string
-	Err        string
-	NeedsLogin bool
+	Record       *Record
+	Active       bool
+	Usage        json.RawMessage
+	FetchedAt    int64
+	Stale        string
+	Err          string
+	NeedsLogin   bool
+	BankedResets *BankedResets `json:"bankedResets,omitempty"`
 }
 
 // Snapshot is every tracked account plus who each CLI is signed in as.
@@ -473,6 +498,9 @@ func (c *Config) Collect(ctx context.Context, opts CollectOptions) (*Snapshot, e
 			results[i] = res
 			if r.Missing {
 				res.Err, res.NeedsLogin = "token not found in store — sign in again for this account", true
+				if r.Provider == Codex {
+					res.BankedResets = c.cachedBankedResets(r, nil, res.Err)
+				}
 				return
 			}
 			var lc *LiveClaude
@@ -485,9 +513,27 @@ func (c *Config) Collect(ctx context.Context, opts CollectOptions) (*Snapshot, e
 			u, err := c.fetchUsageLocked(ctx, &mu, r, lc, lx)
 			if err != nil {
 				res.Err, res.NeedsLogin = Redact(err.Error()), isDeadLoginError(err.Error())
+				if r.Provider == Codex {
+					res.BankedResets = c.cachedBankedResets(r, nil, res.Err)
+				}
 				return
 			}
 			res.Record, res.Usage, res.FetchedAt, res.Stale = u.record, u.usage, u.fetchedAt, u.stale
+			if r.Provider == Codex {
+				res.BankedResets = c.cachedBankedResets(r, u.usage, u.stale)
+				if u.fresh {
+					c.maybeAutoReset(ctx, u.record, u.usage, u.attemptedAt)
+					res.BankedResets = c.cachedBankedResets(r, u.usage, u.stale)
+					if cached := c.readCache()[r.StoreKey()]; cached == nil || cached.Usage == nil {
+						res.Usage = nil
+						res.FetchedAt = 0
+						res.Stale = "reset attempt is unresolved or complete; waiting for authoritative usage refresh"
+						res.BankedResets.Stale = res.Stale
+						res.BankedResets.AvailableCount = nil
+						res.BankedResets.CanRedeem = false
+					}
+				}
+			}
 		}()
 	}
 	wg.Wait()

@@ -20,7 +20,15 @@ func TestSharedAccountContract(t *testing.T) {
 		{Record: &core.Record{Provider: core.Codex, Email: "personal@example.test", Label: "Personal", OrgUUID: "org-personal", PlanType: "plus", Missing: true}, Err: "no stored token", NeedsLogin: true},
 		{Record: &core.Record{Provider: core.Claude, Email: "view@example.test", Label: "Read only", Scopes: []string{"user:profile"}}, Stale: "showing the last known values", FetchedAt: now.Add(-time.Hour).UnixMilli(), Usage: json.RawMessage(`{"five_hour":{"utilization":null,"locked_reason":"restricted"},"seven_day":{"utilization":75}}`)},
 	}}
-	for name, value := range map[string][]jsonAccount{"accounts.json": toJSON(snap, now), "empty.json": toJSON(&core.Snapshot{Empty: true}, now)} {
+	count := 3
+	banked := &core.Snapshot{Results: []*core.Result{
+		{Record: &core.Record{Provider: core.Codex, Email: "reset@example.test", Label: "Banked resets", OrgUUID: "reset-org", PlanType: "plus", ExpiresAt: now.Add(time.Hour).UnixMilli()}, FetchedAt: now.UnixMilli(),
+			Usage:        json.RawMessage(`{"rate_limit":{"primary_window":{"used_percent":99,"limit_window_seconds":18000,"reset_at":1893474000},"secondary_window":{"used_percent":30,"limit_window_seconds":604800,"reset_at":1893974400}}}`),
+			BankedResets: &core.BankedResets{AvailableCount: &count, Credits: []core.BankedResetCredit{{ID: "synthetic-credit-1", ResetType: "codex_rate_limits", Status: "available", GrantedAt: "2029-12-01T00:00:00Z", ExpiresAt: "2030-02-01T00:00:00Z", Title: "Banked Codex reset", CanRedeem: true}}, FetchedAt: "2030-01-01T00:00:00Z", CanRedeem: true, AutoReset: true, AutoResetThresholdPercent: 5, AutoResetStatus: "waiting for fresh usage"}},
+		{Record: &core.Record{Provider: core.Codex, Email: "pending@example.test", OrgUUID: "pending-org", Missing: true}, NeedsLogin: true, Err: "no stored token",
+			BankedResets: &core.BankedResets{Stale: "reset outcome is uncertain", PendingRequest: &core.BankedResetRequest{RequestID: "12345678-1234-4234-8234-123456789abc"}}},
+	}}
+	for name, value := range map[string][]jsonAccount{"accounts.json": toJSON(snap, now), "empty.json": toJSON(&core.Snapshot{Empty: true}, now), "banked-resets.json": toJSON(banked, now)} {
 		data, err := json.MarshalIndent(value, "", "  ")
 		if err != nil {
 			t.Fatal(err)

@@ -297,7 +297,22 @@ func (c *Config) RemoveAccount(target string, provider Provider) (*IndexEntry, e
 	if err != nil {
 		return nil, err
 	}
-	if err := c.tokenDelete(storeKey(e.Provider, e.Email, e.Org)); err != nil {
+	key := storeKey(e.Provider, e.Email, e.Org)
+	if e.Provider == Codex {
+		if err := withFileLock(c.resetAccountLockPath(key), func() error {
+			return c.withResetState(func(s *resetState) error {
+				if a := s.Accounts[key]; a != nil {
+					a.AutoEnabled = false
+					a.AutoArmed = false
+					a.AutoStatus = "disabled"
+				}
+				return nil
+			})
+		}); err != nil {
+			return nil, err
+		}
+	}
+	if err := c.tokenDelete(key); err != nil {
 		return nil, err
 	}
 	kept := idx.Accounts[:0]

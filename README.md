@@ -65,6 +65,16 @@ aiu --json                     # for scripts and status bars
 
 For a second account, sign in from a private browser window so the sign-in page does not reuse the account your browser is already logged in to.
 
+## Banked Codex resets
+
+Codex accounts also support [banked reset management](docs/banked-resets.md):
+inspect with `aiu resets codex:NAME`, redeem with `aiu reset codex:NAME --yes`,
+or opt into `aiu auto-reset codex:NAME --enabled true --threshold 5` to use an
+available reset when a fresh usage reading reports 5% or less remaining. The
+per-account threshold accepts 0–99%, defaults to 1%, and can be updated with
+`--threshold N` alone. Automatic resets default off and use the same shared Go
+backend as every frontend.
+
 ## Updates
 
 `aiu update` says whether a newer release exists and prints the command that installs

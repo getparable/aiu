@@ -28,7 +28,7 @@ type frontendError struct {
 	Message string `json:"message"`
 }
 
-var frontendCapabilities = []string{"status", "add", "login", "switch", "remove", "sync", "cancel"}
+var frontendCapabilities = []string{"status", "add", "login", "switch", "remove", "sync", "resets", "reset", "auto-reset", "cancel"}
 
 func runFrontend(opts *options, cfg *core.Config, in io.Reader, out io.Writer) int {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -55,7 +55,7 @@ func runFrontend(opts *options, cfg *core.Config, in io.Reader, out io.Writer) i
 		return 0
 	}
 	if opts.help {
-		emit(frontendEvent{Event: "result", OK: true, Message: "aiu frontend <status|add|login|switch|remove|sync> --contract-version 1; keep stdin open and send {\"cancel\":true} to cancel"})
+		emit(frontendEvent{Event: "result", OK: true, Message: "aiu frontend <status|add|login|switch|remove|sync|resets|reset|auto-reset> --contract-version 1; keep stdin open and send {\"cancel\":true} to cancel"})
 		return 0
 	}
 	if len(opts.args) == 0 {
@@ -73,7 +73,7 @@ func runFrontend(opts *options, cfg *core.Config, in io.Reader, out io.Writer) i
 		emit(frontendEvent{Event: "result", Error: &frontendError{Code: "invalid_command", Message: "unknown frontend command"}})
 		return 2
 	}
-	if (command == "switch" || command == "remove") && len(opts.args) != 2 {
+	if (command == "switch" || command == "remove" || command == "resets" || command == "reset" || command == "auto-reset") && len(opts.args) != 2 {
 		emit(frontendEvent{Event: "result", Error: &frontendError{Code: "invalid_command", Message: command + " needs one selector"}})
 		return 2
 	}
@@ -83,6 +83,10 @@ func runFrontend(opts *options, cfg *core.Config, in io.Reader, out io.Writer) i
 	}
 	if opts.manual {
 		emit(frontendEvent{Event: "result", Error: &frontendError{Code: "invalid_input", Message: "manual login is available through the terminal command `aiu login --manual`"}})
+		return 2
+	}
+	if err := validateResetOptions(opts, command); err != nil {
+		emit(frontendEvent{Event: "result", Error: &frontendError{Code: "invalid_input", Message: err.Error()}})
 		return 2
 	}
 	// Provider requests may emit warnings concurrently. Keep every stdout write
@@ -215,6 +219,20 @@ func frontendCommand(ctx context.Context, cfg *core.Config, opts *options, comma
 		return "account removed", err
 	case "sync":
 		return "sync complete", frontendSync(ctx, cfg, opts)
+	case "resets":
+		_, err := cfg.ListBankedResets(ctx, selector, opts.provider)
+		return "banked reset details loaded", err
+	case "reset":
+		result, err := cfg.ConsumeBankedReset(ctx, selector, opts.provider, opts.resetCreditID, opts.resetRequestID)
+		if err != nil {
+			return "", err
+		}
+		return result.Message, nil
+	case "auto-reset":
+		if err := cfg.ConfigureAutoReset(ctx, selector, opts.provider, autoResetEnabled(opts), opts.autoResetThreshold); err != nil {
+			return "", err
+		}
+		return autoResetMessage(opts), nil
 	default:
 		return "", errors.New("unknown frontend command")
 	}

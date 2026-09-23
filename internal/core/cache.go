@@ -17,6 +17,7 @@ type cacheEntry struct {
 	Strikes       int             `json:"strikes,omitempty"`
 	LastLimitedAt int64           `json:"lastLimitedAt,omitempty"`
 	LastError     string          `json:"lastError,omitempty"`
+	ResetAt       int64           `json:"resetAt,omitempty"`
 
 	Fingerprint string `json:"fingerprint,omitempty"`
 	Email       string `json:"email,omitempty"`

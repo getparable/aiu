@@ -17,26 +17,31 @@ import (
 )
 
 type options struct {
-	command         string
-	args            []string
-	json            bool
-	provider        core.Provider
-	label           string
-	interval        int
-	sortMode        string
-	noSync          bool
-	readOnly        bool
-	manual          bool
-	console         bool
-	noOpen          bool
-	noColor         bool
-	force           bool
-	contractVersion string
-	help            bool
-	version         bool
+	command            string
+	args               []string
+	json               bool
+	provider           core.Provider
+	label              string
+	interval           int
+	sortMode           string
+	noSync             bool
+	readOnly           bool
+	manual             bool
+	console            bool
+	noOpen             bool
+	noColor            bool
+	force              bool
+	contractVersion    string
+	resetCreditID      string
+	resetRequestID     string
+	autoResetEnabled   string
+	autoResetThreshold *int
+	yes                bool
+	help               bool
+	version            bool
 }
 
-var valueFlags = map[string]bool{"label": true, "interval": true, "sort": true, "provider": true, "contract-version": true}
+var valueFlags = map[string]bool{"label": true, "interval": true, "sort": true, "provider": true, "contract-version": true, "credit-id": true, "request-id": true, "enabled": true, "threshold": true}
 
 func parse(argv []string) (*options, error) {
 	o := &options{}
@@ -65,6 +70,26 @@ func parse(argv []string) (*options, error) {
 		switch key {
 		case "contract-version":
 			o.contractVersion = value
+		case "credit-id":
+			o.resetCreditID = value
+		case "request-id":
+			o.resetRequestID = value
+		case "enabled":
+			if value != "true" && value != "false" {
+				return nil, errors.New("--enabled must be true or false")
+			}
+			o.autoResetEnabled = value
+		case "threshold":
+			threshold, err := strconv.Atoi(value)
+			if err != nil || threshold < 0 || threshold > 99 {
+				return nil, errors.New("--threshold must be a whole remaining percentage from 0 to 99")
+			}
+			o.autoResetThreshold = &threshold
+		case "yes":
+			if hasValue {
+				return nil, errors.New("--yes does not take a value")
+			}
+			o.yes = true
 		case "json":
 			o.json = true
 		case "codex", "claude":
@@ -163,6 +188,7 @@ func run(argv []string, cfg *core.Config) int {
 		"link":    a.link,
 		"update":  a.update,
 		"menubar": a.menuBar, "gui": a.menuBar,
+		"resets": a.resets, "reset": a.reset, "auto-reset": a.autoReset,
 		"help": func(context.Context) error { a.help(); return nil },
 	}
 	handler, ok := commands[opts.command]
@@ -175,6 +201,12 @@ func run(argv []string, cfg *core.Config) int {
 			return 2
 		}
 		return 0
+	}
+	if err := validateResetOptions(opts, opts.command); err != nil {
+		if _, writeErr := fmt.Fprintln(a.stderr, "error: "+err.Error()); writeErr != nil {
+			return 2
+		}
+		return 2
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -550,6 +582,12 @@ func (a *app) help() {
   aiu add --codex                                     track the account Codex is signed in as
   aiu login --codex [--label NAME]                    sign in to another ChatGPT account
   aiu switch codex:NAME                               a claude:/codex: prefix also disambiguates names
+  aiu resets codex:NAME [--json]                      view banked reset balance and expiration details
+  aiu reset codex:NAME --yes [--credit-id ID]         use one banked reset (moves the weekly reset date)
+  aiu auto-reset codex:NAME --enabled true|false [--threshold N]
+  aiu auto-reset codex:NAME --threshold N             set remaining %% (0-99, default 1); preserves enabled state
+  Auto reset is off by default. 0%% means fully exhausted; the threshold is saved per account.
+  Reset checks run during desktop, watch, or status polling. --request-id UUID retries the same reset.
 
 %s
   index    %s

@@ -111,6 +111,7 @@ final class Store {
     var lastError: String?
     var updatedAt: Date?
     var loading = false
+    var resetBusyAccounts: Set<String> = []
     var notice: String?
     var barImage: NSImage = Store.placeholderImage()
 
@@ -299,6 +300,58 @@ final class Store {
         if result.status == 0 {
             flash("Removed \(account.label)")
             await refresh()
+        } else {
+            lastError = result.message
+        }
+    }
+
+    func loadResetDetails(_ account: Account) async {
+        guard resetBusyAccounts.insert(account.id).inserted else { return }
+        defer { resetBusyAccounts.remove(account.id) }
+        let result = await CLI.run(["resets", account.id, "--json"])
+        await refresh()
+        if result.status != 0 { lastError = result.message }
+    }
+
+    func redeemReset(_ account: Account, creditID: String? = nil) async {
+        guard !resetBusyAccounts.contains(account.id) else { return }
+        let pending = account.bankedResets?.pendingRequest
+        let selectedCredit = pending?.creditId ?? creditID
+        let message = pending == nil
+            ? "This spends one banked Codex reset and moves the weekly reset date. The provider chooses which windows to reset."
+            : "This retries the same pending request. Its earlier outcome is uncertain; retrying cannot create a new reset intent."
+        guard confirm(title: pending == nil ? "Use a banked reset for \(account.label)?" : "Retry pending reset for \(account.label)?",
+                      message: message, action: pending == nil ? "Use Reset" : "Retry") else { return }
+        guard resetBusyAccounts.insert(account.id).inserted else { return }
+        defer { resetBusyAccounts.remove(account.id) }
+        let requestID = pending?.requestId ?? UUID().uuidString.lowercased()
+        var args = ["reset", account.id, "--yes", "--request-id", requestID]
+        if let selectedCredit, !selectedCredit.isEmpty { args += ["--credit-id", selectedCredit] }
+        let result = await CLI.run(args)
+        await refresh()
+        if result.status == 0 {
+            flash("Codex reset request completed for \(account.label)")
+        } else {
+            lastError = result.message
+        }
+    }
+
+    func configureAutoReset(_ account: Account, enabled: Bool? = nil, threshold: Int? = nil) async {
+        guard enabled != nil || threshold != nil, !resetBusyAccounts.contains(account.id) else { return }
+        if enabled == true {
+            guard confirm(title: "Enable automatic resets for \(account.label)?",
+                          message: "AIU will spend a banked reset when a fresh Codex usage reading reaches the saved remaining-quota threshold.",
+                          action: "Enable") else { return }
+        }
+        guard resetBusyAccounts.insert(account.id).inserted else { return }
+        defer { resetBusyAccounts.remove(account.id) }
+        var args = ["auto-reset", account.id]
+        if let enabled { args += ["--enabled", enabled ? "true" : "false"] }
+        if let threshold { args += ["--threshold", String(threshold)] }
+        let result = await CLI.run(args)
+        await refresh()
+        if result.status == 0 {
+            flash("Automatic reset settings saved for \(account.label)")
         } else {
             lastError = result.message
         }
@@ -555,6 +608,9 @@ struct AccountBody: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
             }
+            if account.kind == .codex, let resets = account.bankedResets {
+                BankedResetControls(account: account, resets: resets)
+            }
         }
     }
 
@@ -579,6 +635,96 @@ struct AccountBody: View {
         .buttonStyle(.glass)
         .buttonBorderShape(.circle)
         .wrapsVertically()
+    }
+}
+
+struct BankedResetControls: View {
+    @Environment(Store.self) private var store
+    let account: Account
+    let resets: BankedResets
+    @State private var threshold = 1
+
+    private var busy: Bool { store.resetBusyAccounts.contains(account.id) }
+
+    var body: some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 8) {
+                if let status = resets.autoResetStatus, !status.isEmpty {
+                    Text(status).foregroundStyle(.secondary)
+                }
+                if let stale = resets.stale, !stale.isEmpty {
+                    Label(stale, systemImage: "clock.arrow.circlepath")
+                        .foregroundStyle(.secondary)
+                }
+                if let error = resets.error, !error.isEmpty {
+                    Label(error, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.secondary)
+                }
+                if let pending = resets.pendingRequest {
+                    Text("Pending request \(pending.requestId)")
+                        .textSelection(.enabled)
+                        .foregroundStyle(.secondary)
+                    Button("Retry same request") { Task { await store.redeemReset(account) } }
+                        .disabled(busy)
+                } else {
+                    Button("Use one reset…") { Task { await store.redeemReset(account) } }
+                        .disabled(busy || !resets.canRedeem)
+                }
+                Button("Load credit details") { Task { await store.loadResetDetails(account) } }
+                    .disabled(busy)
+                if let credits = resets.credits {
+                    ForEach(credits) { credit in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(credit.title.isEmpty ? credit.id : credit.title)
+                                .fontWeight(.medium)
+                            Text("\(credit.status) · expires \(expiry(credit.expiresAt))")
+                                .foregroundStyle(.secondary)
+                            if credit.canRedeem && resets.canRedeem && resets.pendingRequest == nil {
+                                Button("Use this credit…") {
+                                    Task { await store.redeemReset(account, creditID: credit.id) }
+                                }.disabled(busy)
+                            }
+                        }
+                    }
+                }
+                Divider()
+                HStack {
+                    Text("Automatic reset")
+                    Spacer()
+                    Button(resets.autoReset ? "Turn off" : "Turn on…") {
+                        Task { await store.configureAutoReset(account, enabled: !resets.autoReset) }
+                    }.disabled(busy)
+                }
+                Stepper("At \(threshold)% remaining", value: $threshold, in: 0...99)
+                Button("Save threshold") {
+                    Task { await store.configureAutoReset(account, threshold: threshold) }
+                }
+                .disabled(busy || threshold == resets.autoResetThresholdPercent)
+            }
+            .font(.caption)
+            .padding(.top, 4)
+        } label: {
+            HStack {
+                Text("Banked resets")
+                Spacer()
+                Text(resets.availableCount.map(String.init) ?? "Unknown")
+                    .foregroundStyle(.secondary)
+                if resets.autoReset {
+                    Image(systemName: "bolt.fill")
+                        .help("Automatic reset at \(resets.autoResetThresholdPercent)% remaining")
+                }
+            }
+            .font(.caption.weight(.medium))
+        }
+        .onAppear { threshold = resets.autoResetThresholdPercent }
+        .onChange(of: resets.autoResetThresholdPercent) { _, value in threshold = value }
+    }
+
+    private func expiry(_ raw: String?) -> String {
+        guard let raw, !raw.isEmpty else { return "not reported" }
+        let formatter = ISO8601DateFormatter()
+        guard let date = formatter.date(from: raw) else { return raw }
+        return date.formatted(date: .abbreviated, time: .omitted)
     }
 }
 
