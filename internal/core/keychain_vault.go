@@ -73,7 +73,8 @@ func (c *Config) writeKeychainVault(vault *keychainVault) error {
 
 // migrateLegacyKeychain reads each tracked account before writing anything. An
 // interrupted or denied read leaves every old item intact, so retry is safe.
-// Old items remain as a rollback copy; once the vault exists, AIU reads only it.
+// Old items remain untouched at migration time. They can become stale after
+// token refreshes; once the vault exists, AIU reads only it.
 func (c *Config) migrateLegacyKeychain() (*keychainVault, error) {
 	var idx Index
 	if _, err := readJSONFile(c.indexFile(), &idx); err != nil {

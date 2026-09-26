@@ -92,7 +92,7 @@ func TestKeychainVaultMigratesOnceAndReadsOneItem(t *testing.T) {
 		t.Fatal("migration did not create the vault")
 	}
 	if _, ok := m.items[storeKey(a.Provider, a.Email, "")]; !ok {
-		t.Fatal("migration removed the rollback copy")
+		t.Fatal("migration removed the old item")
 	}
 
 	m.reads = nil

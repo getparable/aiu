@@ -137,8 +137,8 @@ upgrading reads those items and copies them into the single `aiu-accounts-v1` it
 macOS may ask once per old item during that migration. If any read or the new write
 fails, AIU leaves the old items untouched and can retry. Later runs read only the
 single new item, so a rebuilt app needs one Keychain approval rather than one per
-account. The old items remain in Keychain as rollback copies; AIU no longer reads
-them after the new item exists.
+account. The old items remain in Keychain, but their tokens may become stale after
+AIU refreshes the vault. AIU no longer reads them after the new item exists.
 Run `aiu migrate-keychain` to do the copy explicitly before opening the app; it
 accesses only AIU's Keychain items and makes no network requests.
 
