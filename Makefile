@@ -21,7 +21,7 @@ NOTARY_PROFILE ?= aiu
 DIST            = dist
 ZIP             = $(DIST)/AIU-$(VERSION).zip
 
-.PHONY: build test icon app install uninstall tag release clean
+.PHONY: build test icon app install uninstall tag release verify-release-signature clean
 
 build:
 	CGO_ENABLED=1 go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/aiu
@@ -124,6 +124,21 @@ release: test
 	rm -f $(ZIP) && ditto -c -k --keepParent $(APP) $(ZIP)
 	spctl --assess --type execute --verbose=2 $(APP)
 	@echo "✔ $(ZIP) — signed, notarized and stapled"
+
+# Use after a Homebrew bottle build, before uploading it. Ordinary local builds
+# may use an ad-hoc signature; published bottles must carry a Developer ID.
+verify-release-signature:
+	@set -eu; \
+	  codesign --verify --strict --deep "$(APP)"; \
+	  cli_details=$$(codesign -dv --verbose=4 "$(APP)/Contents/MacOS/aiu" 2>&1); \
+	  app_details=$$(codesign -dv --verbose=4 "$(APP)" 2>&1); \
+	  printf '%s\n' "$$cli_details" | grep -Fq 'Identifier=$(CLI_ID)' || { echo 'error: bundled CLI has the wrong signing identifier'; exit 1; }; \
+	  printf '%s\n' "$$cli_details" | grep -Fq 'Authority=Developer ID Application:' || { echo 'error: bundled CLI lacks a Developer ID signature'; exit 1; }; \
+	  printf '%s\n' "$$app_details" | grep -Fq 'Authority=Developer ID Application:' || { echo 'error: app lacks a Developer ID signature'; exit 1; }; \
+	  cli_team=$$(printf '%s\n' "$$cli_details" | sed -n 's/^TeamIdentifier=//p'); \
+	  app_team=$$(printf '%s\n' "$$app_details" | sed -n 's/^TeamIdentifier=//p'); \
+	  test -n "$$cli_team" && test "$$cli_team" != 'not set' && test "$$cli_team" = "$$app_team" || { echo 'error: app and CLI need the same signing team'; exit 1; }; \
+	  echo "✔ Developer ID signature verified for app and CLI (team $$cli_team)"
 
 clean:
 	rm -rf bin build dist

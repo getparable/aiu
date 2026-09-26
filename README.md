@@ -188,14 +188,15 @@ Releases ship through Homebrew, across two repositories: this one, and the tap a
    source tarball SHA-256 to v0.3.1 and remove its old `bottle do` block. Keep this
    formula edit local until the new bottle is uploaded. Otherwise Homebrew builds the
    old version again. `make app` signs both executables and gives the CLI a fixed
-   signing identifier, so Keychain approval persists across upgrades. Check
-   `codesign -dv --verbose=4 "$(brew --prefix aiu)/AIU.app/Contents/MacOS/aiu"`
-   after installation: it must show `Identifier=io.getparable.aiu.cli` and a
-   TeamIdentifier, and must not say `Signature=adhoc`.
+   signing identifier, so Keychain approval persists across upgrades. After installation,
+   run `make verify-release-signature APP="$(brew --prefix aiu)/AIU.app"` from this
+   repo. It rejects an ad-hoc signature, a different CLI identifier, or a team
+   mismatch between the app and CLI.
    `--build-bottle` is an `install` flag, not a `reinstall` one, so the uninstall is required:
    ```sh
    brew uninstall --force getparable/tap/aiu
    HOMEBREW_NO_AUTO_UPDATE=1 brew install --build-bottle getparable/tap/aiu
+   make verify-release-signature APP="$(brew --prefix aiu)/AIU.app"
    brew bottle --json --no-rebuild \
      --root-url="https://github.com/getparable/aiu/releases/download/v0.3.1" \
      getparable/tap/aiu
