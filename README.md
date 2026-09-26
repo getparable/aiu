@@ -184,15 +184,18 @@ Releases ship through Homebrew, across two repositories: this one, and the tap a
    dirty tree, from anything but `origin/main`, or with a `VERSION` that already shipped.
    CI checks the same thing on every pushed tag, in case one is made by hand.
 2. **Build the bottle.** Install a Developer ID Application certificate on the build
-   machine first. `make app` signs both executables and gives the CLI a fixed signing
-   identifier, so Keychain approval persists across upgrades. Check
+   machine first. In the local tap checkout, change the formula's source URL and
+   source tarball SHA-256 to v0.3.1 and remove its old `bottle do` block. Keep this
+   formula edit local until the new bottle is uploaded. Otherwise Homebrew builds the
+   old version again. `make app` signs both executables and gives the CLI a fixed
+   signing identifier, so Keychain approval persists across upgrades. Check
    `codesign -dv --verbose=4 "$(brew --prefix aiu)/AIU.app/Contents/MacOS/aiu"`
    after installation: it must show `Identifier=io.getparable.aiu.cli` and a
    TeamIdentifier, and must not say `Signature=adhoc`.
    `--build-bottle` is an `install` flag, not a `reinstall` one, so the uninstall is required:
    ```sh
    brew uninstall --force getparable/tap/aiu
-   brew install --build-bottle getparable/tap/aiu
+   HOMEBREW_NO_AUTO_UPDATE=1 brew install --build-bottle getparable/tap/aiu
    brew bottle --json --no-rebuild \
      --root-url="https://github.com/getparable/aiu/releases/download/v0.3.1" \
      getparable/tap/aiu
@@ -202,21 +205,21 @@ Releases ship through Homebrew, across two repositories: this one, and the tap a
    URL has *one*; the `.json` manifest spells out both as `local_filename` and `filename`.
    Upload the wrong one and every install quietly compiles instead.
    ```sh
-   cp aiu--0.3.1.arm64_tahoe.bottle.tar.gz aiu-0.3.1.arm64_tahoe.bottle.tar.gz
-   gh release upload v0.3.1 aiu-0.3.1.arm64_tahoe.bottle.tar.gz
+   cp aiu--0.3.1.arm64_golden_gate.bottle.tar.gz aiu-0.3.1.arm64_golden_gate.bottle.tar.gz
+   gh release upload v0.3.1 aiu-0.3.1.arm64_golden_gate.bottle.tar.gz
    ```
-4. **Point the formula at it** (in the tap repo): the new `url`, the sha256 **of the
-   source tarball** — not the bottle's, they are different numbers — and the `bottle do`
-   block from step 2, whose `root_url` carries the new version.
+4. **Publish the formula** in the tap repo. Its source URL and SHA-256 must match the
+   tagged source tarball. Add the `bottle do` block from step 2, whose `root_url`
+   carries the new version, then commit and push the formula.
 5. **Verify it pours**, which is the only thing that proves steps 3 and 4 agree:
    ```sh
    brew update && brew uninstall --force aiu && brew install getparable/tap/aiu
    ```
-   Expect `==> Pouring aiu-0.3.1.arm64_tahoe.bottle.tar.gz` and a couple of seconds. If it
+   Expect `==> Pouring aiu-0.3.1.arm64_golden_gate.bottle.tar.gz` and a couple of seconds. If it
    compiles instead, the bottle name or the `root_url` is wrong.
 
 The bottle is built on the maintainer's machine, so it is tagged for that platform —
-currently `arm64_tahoe`. An Intel Mac has no bottle and builds from source, which is why
+currently `arm64_golden_gate`. An Intel Mac has no bottle and builds from source, which is why
 the Xcode dependency stays on the formula.
 
 ### Signed direct downloads
