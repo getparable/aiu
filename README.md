@@ -36,6 +36,8 @@ quarantine flag and Gatekeeper never asks. Builds use a Developer ID signature w
 the builder has one, or an ad-hoc signature otherwise. The latter makes macOS ask
 again for Keychain access after each upgrade because the executable's code hash changes.
 The first signed upgrade may need one last approval for items created by an ad-hoc build.
+Before upgrading from an older AIU version, quit its menu bar app. Open the new app
+after installation so both the app and CLI use the same credential store.
 
 From a clone instead:
 
@@ -141,6 +143,8 @@ account. The old items remain in Keychain, but their tokens may become stale aft
 AIU refreshes the vault. AIU no longer reads them after the new item exists.
 Run `aiu migrate-keychain` to do the copy explicitly before opening the app; it
 accesses only AIU's Keychain items and makes no network requests.
+Do not keep an older AIU process running after migration: older builds still write
+the per-account items, while the new build reads the vault.
 
 Tokens are only ever sent to Anthropic's and OpenAI's own hosts. There is no telemetry.
 
