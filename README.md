@@ -1,6 +1,6 @@
 # AIU
 
-Rate limits and reset times for several **Claude** (Pro/Max) and **ChatGPT/Codex** accounts in one place — as a CLI and a Liquid Glass menu bar panel on macOS 26.
+Rate limits and reset times for several **Claude** (Pro/Max) and **ChatGPT/Codex** accounts in one place — as a CLI and a Liquid Glass Mac app with an optional menu bar icon on macOS 26.
 
 - Live 5-hour and weekly windows per account, straight from the endpoints `/usage` and `/status` use.
 - Keeps its own copy of each account's login, so signing Claude Code or Codex into another account never loses one.
@@ -32,7 +32,10 @@ no Xcode. An Intel Mac has no bottle and builds from source instead, which is wh
 Xcode requirement below is for.
 
 Either way the app is built or packaged outside a browser download, so it carries no
-quarantine flag and Gatekeeper never asks. It is ad-hoc signed, not notarized.
+quarantine flag and Gatekeeper never asks. Builds use a Developer ID signature when
+the builder has one, or an ad-hoc signature otherwise. The latter makes macOS ask
+again for Keychain access after each upgrade because the executable's code hash changes.
+The first signed upgrade may need one last approval for items created by an ad-hoc build.
 
 From a clone instead:
 
@@ -46,6 +49,10 @@ adds the `~/.local/bin/aiu` shortcut (same as `aiu link install`).
 macOS 26 is required either way: the app targets it, and the bottle is built against it.
 Building from source additionally needs Go 1.27+ and Xcode 27 — the panel needs the
 Swift 6.4 toolchain, so Xcode 26 is not enough — and pouring the bottle needs neither.
+
+Launching AIU opens its Settings window. Usage stays in the menu bar panel.
+Settings → Show Dock icon controls whether AIU appears in the Dock; the menu bar
+icon remains available when the Dock icon is hidden.
 
 ## Use
 
@@ -118,12 +125,22 @@ Reading usage costs no quota, but the endpoints throttle hard. Every AIU process
 
 | What | Where |
 | --- | --- |
-| Token copies | macOS Keychain, service `aiu` (or `~/.config/aiu/tokens.json` with `AIU_STORE=file`) |
+| Token copies | One macOS Keychain item, service `aiu`, account `aiu-accounts-v1` (or `~/.config/aiu/tokens.json` with `AIU_STORE=file`) |
 | Account index, cache, lock | `~/.config/aiu/` |
 | Claude Code's login (read; written by `switch` and refresh hand-back) | Keychain `Claude Code-credentials`, `~/.claude.json` |
 | Codex's login (same) | `~/.codex/auth.json` |
 
 Keychain access may prompt for approval when AIU first reads or updates an existing item. If AIU creates Claude Code's Keychain item during a switch, macOS may ask Claude Code to approve access on its next read. Release builds enable cgo for native Keychain access. Builds without cgo cannot read Keychain items, even when AIU's own store uses `AIU_STORE=file`.
+
+Older AIU builds stored one Keychain item per tracked account. The first run after
+upgrading reads those items and copies them into the single `aiu-accounts-v1` item.
+macOS may ask once per old item during that migration. If any read or the new write
+fails, AIU leaves the old items untouched and can retry. Later runs read only the
+single new item, so a rebuilt app needs one Keychain approval rather than one per
+account. The old items remain in Keychain as rollback copies; AIU no longer reads
+them after the new item exists.
+Run `aiu migrate-keychain` to do the copy explicitly before opening the app; it
+accesses only AIU's Keychain items and makes no network requests.
 
 Tokens are only ever sent to Anthropic's and OpenAI's own hosts. There is no telemetry.
 
@@ -166,8 +183,13 @@ Releases ship through Homebrew, across two repositories: this one, and the tap a
    upgrade that is already installed or never notices the release. It refuses to tag from a
    dirty tree, from anything but `origin/main`, or with a `VERSION` that already shipped.
    CI checks the same thing on every pushed tag, in case one is made by hand.
-2. **Build the bottle.** `--build-bottle` is an `install` flag, not a `reinstall` one, so
-   the uninstall is required:
+2. **Build the bottle.** Install a Developer ID Application certificate on the build
+   machine first. `make app` signs both executables and gives the CLI a fixed signing
+   identifier, so Keychain approval persists across upgrades. Check
+   `codesign -dv --verbose=4 "$(brew --prefix aiu)/AIU.app/Contents/MacOS/aiu"`
+   after installation: it must show `Identifier=io.getparable.aiu.cli` and a
+   TeamIdentifier, and must not say `Signature=adhoc`.
+   `--build-bottle` is an `install` flag, not a `reinstall` one, so the uninstall is required:
    ```sh
    brew uninstall --force getparable/tap/aiu
    brew install --build-bottle getparable/tap/aiu
@@ -199,9 +221,9 @@ the Xcode dependency stays on the formula.
 
 ### Signed direct downloads
 
-Not set up, and not needed for the Homebrew path above — Homebrew's own downloads carry
-no quarantine flag, so an ad-hoc signature is enough. Handing someone a `.zip` or `.dmg`
-directly is what needs a **Developer ID Application** certificate and notarization:
+Not set up for direct downloads. Homebrew's own downloads carry no quarantine flag,
+but a Developer ID signature on the bottle prevents repeated Keychain approval after
+upgrades. Handing someone a `.zip` or `.dmg` directly also needs notarization:
 
 1. **Certificate** (once): Xcode → Settings → Accounts → your team → Manage Certificates → **+** → *Developer ID Application*. Only the team's Account Holder can create one; on a team account, ask them.
 2. **Notary credentials** (once): create an app-specific password at [account.apple.com](https://account.apple.com) → Sign-In and Security, then

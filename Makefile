@@ -1,6 +1,7 @@
 VERSION   ?= 0.3.0
 BUILD     ?= $(shell git rev-list --count HEAD 2>/dev/null || echo 1)
 BUNDLE_ID ?= dev.aiu.menubar
+CLI_ID    ?= io.getparable.aiu.cli
 LDFLAGS    = -s -w -X github.com/getparable/aiu/internal/core.Version=$(VERSION)
 BIN        = bin/aiu
 APP        = build/AIU.app
@@ -15,6 +16,7 @@ SWIFT      = swiftc -O -parse-as-library -swift-version 5 -disable-sandbox
 # Release signing. SIGN_ID defaults to the first "Developer ID Application" identity in
 # the keychain; NOTARY_PROFILE names credentials saved with `xcrun notarytool store-credentials`.
 SIGN_ID        ?= $(shell security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -1)
+APP_SIGN_ID    ?= $(if $(SIGN_ID),$(SIGN_ID),-)
 NOTARY_PROFILE ?= aiu
 DIST            = dist
 ZIP             = $(DIST)/AIU-$(VERSION).zip
@@ -70,8 +72,9 @@ else
 endif
 	cp internal/core/assets/*.svg macos/AppIcon.icns $(APP)/Contents/Resources/
 	sed -e 's/__VERSION__/$(VERSION)/g' -e 's/__BUILD__/$(BUILD)/g' -e 's/__BUNDLE_ID__/$(BUNDLE_ID)/g' macos/Info.plist.in > $(APP)/Contents/Info.plist
-	codesign --force --sign - $(APP)/Contents/MacOS/aiu >/dev/null 2>&1 || true
-	codesign --force --sign - $(APP) >/dev/null 2>&1 || echo "  (ad-hoc signing unavailable — the app still runs locally)"
+	codesign --force --timestamp=none --identifier "$(CLI_ID)" --sign "$(APP_SIGN_ID)" $(APP)/Contents/MacOS/aiu
+	codesign --force --timestamp=none --sign "$(APP_SIGN_ID)" $(APP)
+	codesign --verify --strict --deep $(APP)
 	@echo "✔ $(APP)"
 
 # The CLI is a symlink into the installed app, so the two never drift apart.
@@ -111,7 +114,7 @@ release: test
 	@test -n "$(SIGN_ID)" || { echo "error: no \"Developer ID Application\" certificate in the keychain — see README → Releasing"; exit 1; }
 	@xcrun notarytool history --keychain-profile "$(NOTARY_PROFILE)" >/dev/null 2>&1 || { echo "error: no notarytool credentials named \"$(NOTARY_PROFILE)\" — see README → Releasing"; exit 1; }
 	$(MAKE) app BIN_ARCH=universal
-	codesign --force --timestamp --options runtime --entitlements macos/entitlements.plist --sign "$(SIGN_ID)" $(APP)/Contents/MacOS/aiu
+	codesign --force --timestamp --options runtime --entitlements macos/entitlements.plist --identifier "$(CLI_ID)" --sign "$(SIGN_ID)" $(APP)/Contents/MacOS/aiu
 	codesign --force --timestamp --options runtime --entitlements macos/entitlements.plist --sign "$(SIGN_ID)" $(APP)
 	codesign --verify --strict --deep --verbose=2 $(APP)
 	mkdir -p $(DIST) && rm -f $(ZIP)
