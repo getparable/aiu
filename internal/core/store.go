@@ -1,7 +1,6 @@
 package core
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -151,18 +150,11 @@ func (c *Config) saveIndex(idx *Index) error { return writePrivateJSON(c.indexFi
 
 func (c *Config) tokenGet(key string) (*Record, error) {
 	if c.UseKeychain {
-		raw, ok, err := keychainRead(c.StoreService, key)
+		vault, err := c.loadKeychainVault()
 		if err != nil {
 			return nil, err
 		}
-		if !ok {
-			return nil, nil
-		}
-		var r Record
-		if err := json.Unmarshal([]byte(raw), &r); err != nil {
-			return nil, fmt.Errorf("stored token for %s is corrupt: %w", key, err)
-		}
-		return &r, nil
+		return vault.Records[key], nil
 	}
 	store := map[string]*Record{}
 	if _, err := readTokenStore(c, &store); err != nil {
@@ -173,11 +165,9 @@ func (c *Config) tokenGet(key string) (*Record, error) {
 
 func (c *Config) tokenSet(key string, r *Record) error {
 	if c.UseKeychain {
-		data, err := json.Marshal(r)
-		if err != nil {
-			return err
-		}
-		return keychainWrite(c.StoreService, key, string(data))
+		return c.updateKeychainVault(func(vault *keychainVault) {
+			vault.Records[key] = r
+		})
 	}
 	return withFileLock(c.fileStore()+".lock", func() error {
 		store := map[string]*Record{}
@@ -191,7 +181,7 @@ func (c *Config) tokenSet(key string, r *Record) error {
 
 func (c *Config) tokenDelete(key string) error {
 	if c.UseKeychain {
-		return keychainDelete(c.StoreService, key)
+		return c.deleteKeychainToken(key)
 	}
 	return withFileLock(c.fileStore()+".lock", func() error {
 		store := map[string]*Record{}
@@ -205,11 +195,26 @@ func (c *Config) tokenDelete(key string) error {
 
 // LoadRecords joins the index with the stored tokens.
 func (c *Config) LoadRecords(idx *Index) ([]*Record, error) {
-	out := make([]*Record, 0, len(idx.Accounts))
-	for _, e := range idx.Accounts {
-		r, err := c.tokenGet(storeKey(e.Provider, e.Email, e.Org))
+	var vault *keychainVault
+	if c.UseKeychain && len(idx.Accounts) > 0 {
+		var err error
+		vault, err = c.loadKeychainVault()
 		if err != nil {
 			return nil, err
+		}
+	}
+	out := make([]*Record, 0, len(idx.Accounts))
+	for _, e := range idx.Accounts {
+		key := storeKey(e.Provider, e.Email, e.Org)
+		var r *Record
+		if vault != nil {
+			r = vault.Records[key]
+		} else {
+			var err error
+			r, err = c.tokenGet(key)
+			if err != nil {
+				return nil, err
+			}
 		}
 		if r == nil {
 			r = &Record{Missing: true}

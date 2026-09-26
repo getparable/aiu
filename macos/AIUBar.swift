@@ -34,6 +34,7 @@ struct LogoView: View {
             .renderingMode(.template)
             .interpolation(.high)
             .frame(width: size, height: size)
+            .foregroundStyle(.primary)
             .accessibilityLabel(provider.name)
     }
 }
@@ -556,6 +557,7 @@ struct AccountBody: View {
     @Environment(Store.self) private var store
     let account: Account
     var showsAddress = true
+    @State private var showingBankedResets = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -574,6 +576,12 @@ struct AccountBody: View {
                         .background(.primary.opacity(0.07), in: .capsule)
                 }
                 Spacer(minLength: 4)
+                if let count = account.bankedResets?.availableCount, count > 0 {
+                    Image(systemName: "arrow.counterclockwise.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .help("\(count) banked reset\(count == 1 ? "" : "s") available")
+                }
                 actions
             }
             // Top level: the address. Nested under an address: the organization.
@@ -608,9 +616,6 @@ struct AccountBody: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
             }
-            if account.kind == .codex, let resets = account.bankedResets {
-                BankedResetControls(account: account, resets: resets)
-            }
         }
     }
 
@@ -621,6 +626,14 @@ struct AccountBody: View {
             }
             if account.needsLogin || account.login.state == "expiring" {
                 Button("Sign In Again…") { store.beginLogin(account.kind, label: account.label) }
+            }
+            if let resets = account.bankedResets {
+                Button {
+                    showingBankedResets = true
+                } label: {
+                    Label(resets.availableCount.map { "Banked resets (\($0))" } ?? "Banked resets",
+                          systemImage: "arrow.counterclockwise.circle")
+                }
             }
             Divider()
             Button("Remove…", role: .destructive) { Task { await store.remove(account) } }
@@ -635,6 +648,12 @@ struct AccountBody: View {
         .buttonStyle(.glass)
         .buttonBorderShape(.circle)
         .wrapsVertically()
+        .popover(isPresented: $showingBankedResets, arrowEdge: .leading) {
+            if let resets = account.bankedResets {
+                BankedResetControls(account: account, resets: resets)
+                    .environment(store)
+            }
+        }
     }
 }
 
@@ -647,7 +666,15 @@ struct BankedResetControls: View {
     private var busy: Bool { store.resetBusyAccounts.contains(account.id) }
 
     var body: some View {
-        DisclosureGroup {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Banked resets", systemImage: "arrow.counterclockwise.circle")
+                    .font(.headline)
+                Spacer()
+                Text(resets.availableCount.map(String.init) ?? "Unknown")
+                    .foregroundStyle(.secondary)
+            }
+            Divider()
             VStack(alignment: .leading, spacing: 8) {
                 if let status = resets.autoResetStatus, !status.isEmpty {
                     Text(status).foregroundStyle(.secondary)
@@ -702,20 +729,9 @@ struct BankedResetControls: View {
                 .disabled(busy || threshold == resets.autoResetThresholdPercent)
             }
             .font(.caption)
-            .padding(.top, 4)
-        } label: {
-            HStack {
-                Text("Banked resets")
-                Spacer()
-                Text(resets.availableCount.map(String.init) ?? "Unknown")
-                    .foregroundStyle(.secondary)
-                if resets.autoReset {
-                    Image(systemName: "bolt.fill")
-                        .help("Automatic reset at \(resets.autoResetThresholdPercent)% remaining")
-                }
-            }
-            .font(.caption.weight(.medium))
         }
+        .padding(14)
+        .frame(width: 300)
         .onAppear { threshold = resets.autoResetThresholdPercent }
         .onChange(of: resets.autoResetThresholdPercent) { _, value in threshold = value }
     }
@@ -792,9 +808,9 @@ struct ProviderSection: View {
                     LogoView(provider: provider, size: 13)
                     Text(provider.name)
                         .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
                     Spacer()
                 }
-                .foregroundStyle(.secondary)
                 .padding(.horizontal, 4)
                 ForEach(groupedByAddress(accounts), id: \.0) { email, group in
                     if group.count == 1 {
@@ -814,8 +830,10 @@ struct SummaryCard: View {
     @Environment(Store.self) private var store
 
     var body: some View {
+        let providers = Provider.allCases.filter { !store.group($0).isEmpty }
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(Provider.allCases.filter { !store.group($0).isEmpty }) { provider in
+            ForEach(Array(providers.enumerated()), id: \.element.id) { index, provider in
+                if index > 0 { Divider().opacity(0.35) }
                 row(provider)
             }
         }
@@ -827,18 +845,10 @@ struct SummaryCard: View {
     private func row(_ provider: Provider) -> some View {
         let active = store.group(provider).first(where: \.active)
         let best = store.recommended(provider)
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
                 LogoView(provider: provider, size: 13)
                 switcher(provider, active: active)
-                if let active {
-                    TimelineView(.everyMinute) { context in
-                        Text(limitText(active, now: context.date))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
                 Spacer(minLength: 4)
                 if let account = active ?? best {
                     Text("\(Int(account.tightest.rounded()))%")
@@ -846,6 +856,14 @@ struct SummaryCard: View {
                         .monospacedDigit()
                         .foregroundStyle(account.tightest >= 80 ? .primary : .secondary)
                 }
+            }
+            if let active {
+                TimelineView(.everyMinute) { context in
+                    Text(limitText(active, now: context.date))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.leading, 21)
             }
             if let best {
                 hint(best, active: active)
@@ -871,10 +889,11 @@ struct SummaryCard: View {
             Text(active?.label ?? "choose account")
                 .font(.system(.body, weight: .semibold))
                 .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 205, alignment: .leading)
         }
         .menuStyle(.button)
         .buttonStyle(.glass)
-        .fixedSize()
         .help("Switch \(provider.client) to another account")
     }
 
@@ -905,40 +924,34 @@ struct SummaryCard: View {
     private func hint(_ best: Account, active: Account?) -> some View {
         let spent = best.allSpent == true
         let onBest = !spent && best.id == active?.id
-        HStack(spacing: 7) {
+        HStack(alignment: .top, spacing: 7) {
             Image(systemName: spent ? "clock" : (onBest ? "checkmark" : "star.fill"))
                 .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .frame(width: 13)
-            if onBest {
-                Text(best.why.map { "best available · \($0)" } ?? "best available")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-            } else {
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(spent ? "all spent · \(best.label) back first" : "use next: \(best.label)")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    if let why = best.why, !why.isEmpty {
-                        Text(why)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                    }
-                }
-                Spacer(minLength: 4)
-                if !spent && best.canSwitch {
-                    Button("Switch") {
-                        Task { await store.switchTo(best) }
-                    }
-                    .buttonStyle(.glass)
-                    .controlSize(.small)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(spent ? "All spent · \(best.label) back first" :
+                     onBest ? "Best available" : "Use next: \(best.label)")
                     .font(.caption.weight(.semibold))
-                    .help("Point \(best.kind.client) at \(best.label) (\(best.email))")
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let why = best.why, !why.isEmpty {
+                    Text(why)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
                 }
+            }
+            Spacer(minLength: 4)
+            if !spent && !onBest && best.canSwitch {
+                Button("Switch") {
+                    Task { await store.switchTo(best) }
+                }
+                .buttonStyle(.glass)
+                .controlSize(.small)
+                .font(.caption.weight(.semibold))
+                .help("Point \(best.kind.client) at \(best.label) (\(best.email))")
             }
         }
         .padding(.leading, 23)
@@ -1106,6 +1119,7 @@ struct SettingsView: View {
     static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
 
     @Environment(Store.self) private var store
+    @AppStorage("showDockIcon") private var showDockIcon = false
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var launchError: String?
     @State private var link = CLILink.State()
@@ -1217,6 +1231,11 @@ struct SettingsView: View {
                         launchError = error.localizedDescription
                         launchAtLogin = SMAppService.mainApp.status == .enabled
                     }
+                }
+            Toggle("Show Dock icon", isOn: $showDockIcon)
+                .onChange(of: showDockIcon) { _, show in
+                    NSApp.setActivationPolicy(show ? .regular : .accessory)
+                    if show { NSApp.activate() }
                 }
             if let launchError {
                 Text(launchError).font(.caption).foregroundStyle(.secondary)
@@ -1448,11 +1467,27 @@ private struct SlimScrollIndicator: ViewModifier {
 
 // MARK: - App
 
+final class AIUAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        let showDockIcon = UserDefaults.standard.bool(forKey: "showDockIcon")
+        NSApp.setActivationPolicy(showDockIcon ? .regular : .accessory)
+    }
+}
+
 @main
 struct AIUBarApp: App {
+    @NSApplicationDelegateAdaptor(AIUAppDelegate.self) private var appDelegate
     @State private var store = Store()
 
     var body: some Scene {
+        WindowGroup("AIU Settings", id: "settings") {
+            SettingsView()
+                .environment(store)
+                .frame(width: 360)
+                .padding(16)
+        }
+        .defaultSize(width: 392, height: 480)
+
         MenuBarExtra {
             Panel().environment(store)
         } label: {
