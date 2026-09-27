@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 )
 
@@ -69,14 +70,22 @@ func (c *Config) ownKeychainDelete(account string) error {
 	return keychainDelete(c.StoreService, account)
 }
 
-func (c *Config) keychainVaultLock() string {
+func (c *Config) keychainVaultLock() (string, error) {
 	if c.keychainIO != nil && c.keychainIO.lockPath != "" {
-		return c.keychainIO.lockPath
+		return c.keychainIO.lockPath, nil
 	}
 	// The Keychain item belongs to the user and service, not Config.Dir.
-	home, _ := os.UserHomeDir()
+	// Native Keychain builds use cgo, so os/user reads the OS account database
+	// instead of HOME, which callers can override independently of the Keychain.
+	current, err := user.Current()
+	if err != nil {
+		return "", fmt.Errorf("cannot identify the Keychain owner: %w", err)
+	}
+	if !filepath.IsAbs(current.HomeDir) {
+		return "", errors.New("Keychain owner has no absolute home directory")
+	}
 	identity := sha256.Sum256([]byte(c.StoreService + "\x00" + keychainVaultAccount))
-	return filepath.Join(home, ".config", "aiu", "locks", fmt.Sprintf("keychain-%x.lock", identity))
+	return filepath.Join(current.HomeDir, ".config", "aiu", "locks", fmt.Sprintf("keychain-%x.lock", identity)), nil
 }
 
 func (c *Config) keychainMigrationID() (string, error) {
@@ -188,7 +197,11 @@ func (c *Config) loadKeychainVault() (*keychainVault, error) {
 	if err != nil || (ok && vault.MigratedConfigs[migrationID]) {
 		return vault, err
 	}
-	err = withFileLock(c.keychainVaultLock(), func() error {
+	lockPath, err := c.keychainVaultLock()
+	if err != nil {
+		return nil, err
+	}
+	err = withFileLock(lockPath, func() error {
 		vault, err = c.loadOrMigrateKeychainVaultLocked()
 		return err
 	})
@@ -225,7 +238,11 @@ func (c *Config) MigrateKeychainVault() (int, error) {
 }
 
 func (c *Config) updateKeychainVault(change func(*keychainVault)) error {
-	return withFileLock(c.keychainVaultLock(), func() error {
+	lockPath, err := c.keychainVaultLock()
+	if err != nil {
+		return err
+	}
+	return withFileLock(lockPath, func() error {
 		vault, err := c.loadOrMigrateKeychainVaultLocked()
 		if err != nil {
 			return err
@@ -236,7 +253,11 @@ func (c *Config) updateKeychainVault(change func(*keychainVault)) error {
 }
 
 func (c *Config) deleteKeychainToken(key string) error {
-	return withFileLock(c.keychainVaultLock(), func() error {
+	lockPath, err := c.keychainVaultLock()
+	if err != nil {
+		return err
+	}
+	return withFileLock(lockPath, func() error {
 		vault, err := c.loadOrMigrateKeychainVaultLocked()
 		if err != nil {
 			return err

@@ -234,17 +234,35 @@ func TestKeychainVaultLockScopeMatchesSharedStore(t *testing.T) {
 	c, _ := vaultTestConfig(t)
 	other := *c
 	other.Dir = t.TempDir()
-	if c.keychainVaultLock() != other.keychainVaultLock() {
+	if vaultLockPath(t, c) != vaultLockPath(t, &other) {
 		t.Fatal("configs sharing one vault use different locks")
 	}
 	// Check production scope too, without opening a real lock or Keychain item.
 	c.keychainIO, other.keychainIO = nil, nil
-	if c.keychainVaultLock() != other.keychainVaultLock() {
+	if vaultLockPath(t, c) != vaultLockPath(t, &other) {
 		t.Fatal("production configs sharing one vault use different locks")
 	}
 	other.StoreService = "different-service"
-	if c.keychainVaultLock() == other.keychainVaultLock() {
+	if vaultLockPath(t, c) == vaultLockPath(t, &other) {
 		t.Fatal("different vault services should have independent locks")
+	}
+}
+
+func vaultLockPath(t *testing.T, c *Config) string {
+	t.Helper()
+	path, err := c.keychainVaultLock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestKeychainVaultLockIgnoresHOMEOverride(t *testing.T) {
+	c := &Config{Dir: t.TempDir(), StoreService: "aiu-test"}
+	first := vaultLockPath(t, c)
+	t.Setenv("HOME", t.TempDir())
+	if second := vaultLockPath(t, c); second != first {
+		t.Fatal("HOME override changed the lock for the same Keychain owner")
 	}
 }
 
