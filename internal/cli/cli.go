@@ -185,9 +185,10 @@ func run(argv []string, cfg *core.Config) int {
 		"status": a.status, "watch": a.watch, "login": a.login, "add": a.add,
 		"list": a.list, "ls": a.list, "remove": a.remove, "rm": a.remove,
 		"sync": a.sync, "switch": a.switchTo, "use": a.switchTo, "whoami": a.whoami,
-		"link":    a.link,
-		"update":  a.update,
-		"menubar": a.menuBar, "gui": a.menuBar,
+		"link":             a.link,
+		"update":           a.update,
+		"migrate-keychain": a.migrateKeychain,
+		"menubar":          a.menuBar, "gui": a.menuBar,
 		"resets": a.resets, "reset": a.reset, "auto-reset": a.autoReset,
 		"help": func(context.Context) error { a.help(); return nil },
 	}
@@ -443,6 +444,18 @@ func (a *app) list(ctx context.Context) error {
 	return nil
 }
 
+func (a *app) migrateKeychain(context.Context) error {
+	if len(a.opts.args) != 0 {
+		return errors.New("usage: aiu migrate-keychain")
+	}
+	count, err := a.cfg.MigrateKeychainVault()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(a.stdout, "AIU Keychain vault ready: %d account(s) in one item\n", count)
+	return nil
+}
+
 func (a *app) remove(context.Context) error {
 	if len(a.opts.args) == 0 {
 		return errors.New("usage: aiu remove <email|label> [--codex]")
@@ -574,6 +587,7 @@ func (a *app) help() {
   aiu switch <email|label>                            point Claude Code (or Codex) at a tracked account
   aiu list | remove <email|label> | sync | whoami
   aiu link [install|remove|status]                    add or drop the ~/.local/bin/aiu shortcut
+  aiu migrate-keychain                                copy old AIU tokens into one Keychain item
   aiu update [--force]                                is there a newer release? (never installs)
   aiu gui | menubar                                    open the bundled desktop app
 

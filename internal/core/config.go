@@ -111,6 +111,7 @@ type Config struct {
 	UseKeychain  bool
 	UseDPAPI     bool   // Windows user-bound encryption for AIU's own token copies
 	StoreService string // keychain service for our own token copies
+	keychainIO   *keychainIO
 
 	ClaudeDir          string // Claude Code's config dir (.credentials.json lives here off macOS)
 	ClaudeService      string // Claude Code's keychain service

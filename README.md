@@ -1,6 +1,6 @@
 # AIU
 
-Rate limits and reset times for several **Claude** (Pro/Max) and **ChatGPT/Codex** accounts in one place — as a CLI and a Liquid Glass menu bar panel on macOS 26.
+Rate limits and reset times for several **Claude** (Pro/Max) and **ChatGPT/Codex** accounts in one place — as a CLI and a Liquid Glass Mac app with an optional menu bar icon on macOS 26.
 
 - Live 5-hour and weekly windows per account, straight from the endpoints `/usage` and `/status` use.
 - Keeps its own copy of each account's login, so signing Claude Code or Codex into another account never loses one.
@@ -32,7 +32,12 @@ no Xcode. An Intel Mac has no bottle and builds from source instead, which is wh
 Xcode requirement below is for.
 
 Either way the app is built or packaged outside a browser download, so it carries no
-quarantine flag and Gatekeeper never asks. It is ad-hoc signed, not notarized.
+quarantine flag and Gatekeeper never asks. Builds use a Developer ID signature when
+the builder has one, or an ad-hoc signature otherwise. The latter makes macOS ask
+again for Keychain access after each upgrade because the executable's code hash changes.
+The first signed upgrade may need one last approval for items created by an ad-hoc build.
+Before upgrading from an older AIU version, quit its menu bar app. Open the new app
+after installation so both the app and CLI use the same credential store.
 
 From a clone instead:
 
@@ -46,6 +51,10 @@ adds the `~/.local/bin/aiu` shortcut (same as `aiu link install`).
 macOS 26 is required either way: the app targets it, and the bottle is built against it.
 Building from source additionally needs Go 1.27+ and Xcode 27 — the panel needs the
 Swift 6.4 toolchain, so Xcode 26 is not enough — and pouring the bottle needs neither.
+
+Launching AIU opens its Settings window. Usage stays in the menu bar panel.
+Settings → Show Dock icon controls whether AIU appears in the Dock; the menu bar
+icon remains available when the Dock icon is hidden.
 
 ## Use
 
@@ -118,12 +127,24 @@ Reading usage costs no quota, but the endpoints throttle hard. Every AIU process
 
 | What | Where |
 | --- | --- |
-| Token copies | macOS Keychain, service `aiu` (or `~/.config/aiu/tokens.json` with `AIU_STORE=file`) |
+| Token copies | One macOS Keychain item, service `aiu`, account `aiu-accounts-v1` (or `~/.config/aiu/tokens.json` with `AIU_STORE=file`) |
 | Account index, cache, lock | `~/.config/aiu/` |
 | Claude Code's login (read; written by `switch` and refresh hand-back) | Keychain `Claude Code-credentials`, `~/.claude.json` |
 | Codex's login (same) | `~/.codex/auth.json` |
 
 Keychain access may prompt for approval when AIU first reads or updates an existing item. If AIU creates Claude Code's Keychain item during a switch, macOS may ask Claude Code to approve access on its next read. Release builds enable cgo for native Keychain access. Builds without cgo cannot read Keychain items, even when AIU's own store uses `AIU_STORE=file`.
+
+Older AIU builds stored one Keychain item per tracked account. The first run after
+upgrading reads those items and copies them into the single `aiu-accounts-v1` item.
+macOS may ask once per old item during that migration. If any read or the new write
+fails, AIU leaves the old items untouched and can retry. Later runs read only the
+single new item, so a rebuilt app needs one Keychain approval rather than one per
+account. The old items remain in Keychain, but their tokens may become stale after
+AIU refreshes the vault. AIU no longer reads them after the new item exists.
+Run `aiu migrate-keychain` to do the copy explicitly before opening the app; it
+accesses only AIU's Keychain items and makes no network requests.
+Do not keep an older AIU process running after migration: older builds still write
+the per-account items, while the new build reads the vault.
 
 Tokens are only ever sent to Anthropic's and OpenAI's own hosts. There is no telemetry.
 
@@ -159,20 +180,29 @@ Releases ship through Homebrew, across two repositories: this one, and the tap a
    `main` with nothing uncommitted:
    ```sh
    make tag
-   gh release create v0.2.0 --title "aiu 0.2.0" --latest --notes "…"
+   gh release create v0.3.1 --title "aiu 0.3.1" --latest --notes-file docs/releases/v0.3.1.md
    ```
    `make tag` derives the tag from `VERSION`, so the two cannot disagree — which they have,
    twice: the binary then reports the wrong version and `aiu update` either nags about an
    upgrade that is already installed or never notices the release. It refuses to tag from a
    dirty tree, from anything but `origin/main`, or with a `VERSION` that already shipped.
    CI checks the same thing on every pushed tag, in case one is made by hand.
-2. **Build the bottle.** `--build-bottle` is an `install` flag, not a `reinstall` one, so
-   the uninstall is required:
+2. **Build the bottle.** Install a Developer ID Application certificate on the build
+   machine first. In the local tap checkout, change the formula's source URL and
+   source tarball SHA-256 to v0.3.1 and remove its old `bottle do` block. Keep this
+   formula edit local until the new bottle is uploaded. Otherwise Homebrew builds the
+   old version again. `make app` signs both executables and gives the CLI a fixed
+   signing identifier, so Keychain approval persists across upgrades. After installation,
+   run `make verify-release-signature APP="$(brew --prefix aiu)/AIU.app"` from this
+   repo. It rejects an ad-hoc signature, a different CLI identifier, or a team
+   mismatch between the app and CLI.
+   `--build-bottle` is an `install` flag, not a `reinstall` one, so the uninstall is required:
    ```sh
    brew uninstall --force getparable/tap/aiu
-   brew install --build-bottle getparable/tap/aiu
+   HOMEBREW_NO_AUTO_UPDATE=1 brew install --build-bottle getparable/tap/aiu
+   make verify-release-signature APP="$(brew --prefix aiu)/AIU.app"
    brew bottle --json --no-rebuild \
-     --root-url="https://github.com/getparable/aiu/releases/download/v0.2.0" \
+     --root-url="https://github.com/getparable/aiu/releases/download/v0.3.1" \
      getparable/tap/aiu
    ```
    Keep the `bottle do` block it prints — step 4 needs it.
@@ -180,28 +210,28 @@ Releases ship through Homebrew, across two repositories: this one, and the tap a
    URL has *one*; the `.json` manifest spells out both as `local_filename` and `filename`.
    Upload the wrong one and every install quietly compiles instead.
    ```sh
-   cp aiu--0.2.0.arm64_tahoe.bottle.tar.gz aiu-0.2.0.arm64_tahoe.bottle.tar.gz
-   gh release upload v0.2.0 aiu-0.2.0.arm64_tahoe.bottle.tar.gz
+   cp aiu--0.3.1.arm64_golden_gate.bottle.tar.gz aiu-0.3.1.arm64_golden_gate.bottle.tar.gz
+   gh release upload v0.3.1 aiu-0.3.1.arm64_golden_gate.bottle.tar.gz
    ```
-4. **Point the formula at it** (in the tap repo): the new `url`, the sha256 **of the
-   source tarball** — not the bottle's, they are different numbers — and the `bottle do`
-   block from step 2, whose `root_url` carries the new version.
+4. **Publish the formula** in the tap repo. Its source URL and SHA-256 must match the
+   tagged source tarball. Add the `bottle do` block from step 2, whose `root_url`
+   carries the new version, then commit and push the formula.
 5. **Verify it pours**, which is the only thing that proves steps 3 and 4 agree:
    ```sh
    brew update && brew uninstall --force aiu && brew install getparable/tap/aiu
    ```
-   Expect `==> Pouring aiu-0.2.0.arm64_tahoe.bottle.tar.gz` and a couple of seconds. If it
+   Expect `==> Pouring aiu-0.3.1.arm64_golden_gate.bottle.tar.gz` and a couple of seconds. If it
    compiles instead, the bottle name or the `root_url` is wrong.
 
 The bottle is built on the maintainer's machine, so it is tagged for that platform —
-currently `arm64_tahoe`. An Intel Mac has no bottle and builds from source, which is why
+currently `arm64_golden_gate`. An Intel Mac has no bottle and builds from source, which is why
 the Xcode dependency stays on the formula.
 
 ### Signed direct downloads
 
-Not set up, and not needed for the Homebrew path above — Homebrew's own downloads carry
-no quarantine flag, so an ad-hoc signature is enough. Handing someone a `.zip` or `.dmg`
-directly is what needs a **Developer ID Application** certificate and notarization:
+Not set up for direct downloads. Homebrew's own downloads carry no quarantine flag,
+but a Developer ID signature on the bottle prevents repeated Keychain approval after
+upgrades. Handing someone a `.zip` or `.dmg` directly also needs notarization:
 
 1. **Certificate** (once): Xcode → Settings → Accounts → your team → Manage Certificates → **+** → *Developer ID Application*. Only the team's Account Holder can create one; on a team account, ask them.
 2. **Notary credentials** (once): create an app-specific password at [account.apple.com](https://account.apple.com) → Sign-In and Security, then
@@ -210,9 +240,9 @@ directly is what needs a **Developer ID Application** certificate and notarizati
    ```
 3. **Release**: set the bundle id to a domain you own, then
    ```sh
-   make release VERSION=0.2.0 BUNDLE_ID=com.example.aiu
+   make release VERSION=0.3.1 BUNDLE_ID=com.example.aiu
    ```
-   This runs the tests, builds a universal app, signs both binaries with the hardened runtime, notarizes, staples, and writes `dist/AIU-0.2.0.zip`. It refuses to start without both of the above.
+   This runs the tests, builds a universal app, signs both binaries with the hardened runtime, notarizes, staples, and writes `dist/AIU-0.3.1.zip`. It refuses to start without both of the above.
 
 ## Trademarks
 
