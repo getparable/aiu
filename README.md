@@ -191,16 +191,23 @@ Releases ship through Homebrew, across two repositories: this one, and the tap a
    machine first. In the local tap checkout, change the formula's source URL and
    source tarball SHA-256 to v0.3.1 and remove its old `bottle do` block. Keep this
    formula edit local until the new bottle is uploaded. Otherwise Homebrew builds the
-   old version again. `make app` signs both executables and gives the CLI a fixed
-   signing identifier, so Keychain approval persists across upgrades. After installation,
-   run `make verify-release-signature APP="$(brew --prefix aiu)/AIU.app"` from this
-   repo. It rejects an ad-hoc signature, a different CLI identifier, or a team
+   old version again. Homebrew's build sandbox can hide the signing identity from
+   `make app`, so sign the installed app outside that sandbox before bottling it.
+   Use the Developer ID Application identity shown by
+   `security find-identity -v -p codesigning`. The CLI needs its fixed signing
+   identifier so Keychain approval persists across upgrades. The verification
+   command rejects an ad-hoc signature, a different CLI identifier, or a team
    mismatch between the app and CLI.
    `--build-bottle` is an `install` flag, not a `reinstall` one, so the uninstall is required:
    ```sh
    brew uninstall --force getparable/tap/aiu
    HOMEBREW_NO_AUTO_UPDATE=1 brew install --build-bottle getparable/tap/aiu
-   make verify-release-signature APP="$(brew --prefix aiu)/AIU.app"
+   AIU_SIGN_ID='Developer ID Application: Parable, LLC (RB2G649FSL)'
+   AIU_BOTTLE_APP="$(brew --prefix aiu)/AIU.app"
+   codesign --force --timestamp --identifier io.getparable.aiu.cli \
+     --sign "$AIU_SIGN_ID" "$AIU_BOTTLE_APP/Contents/MacOS/aiu"
+   codesign --force --timestamp --sign "$AIU_SIGN_ID" "$AIU_BOTTLE_APP"
+   make verify-release-signature APP="$AIU_BOTTLE_APP"
    brew bottle --json --no-rebuild \
      --root-url="https://github.com/getparable/aiu/releases/download/v0.3.1" \
      getparable/tap/aiu
@@ -219,6 +226,7 @@ Releases ship through Homebrew, across two repositories: this one, and the tap a
 5. **Verify it pours**, which is the only thing that proves steps 3 and 4 agree:
    ```sh
    brew update && brew uninstall --force aiu && brew install getparable/tap/aiu
+   make verify-release-signature APP="$(brew --prefix aiu)/AIU.app"
    ```
    Expect `==> Pouring aiu-0.3.1.arm64_golden_gate.bottle.tar.gz` and a couple of seconds. If it
    compiles instead, the bottle name or the `root_url` is wrong.
