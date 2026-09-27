@@ -129,12 +129,8 @@ func (c *Config) fillMissingOrgs(idx *Index) {
 			continue
 		}
 		r.OrgUUID, r.OrgName = org, orgName
-		if err := c.tokenSet(storeKey(e.Provider, e.Email, org), r); err != nil {
+		if err := c.tokenRekey(oldKey, storeKey(e.Provider, e.Email, org), r); err != nil {
 			c.Warn("could not re-key " + e.Email + ": " + err.Error())
-			continue
-		}
-		if err := c.tokenDelete(oldKey); err != nil {
-			c.Warn("could not remove the old key for " + e.Email + ": " + err.Error())
 			continue
 		}
 		e.Org, e.OrgName, changed = org, orgName, true
@@ -148,13 +144,23 @@ func (c *Config) fillMissingOrgs(idx *Index) {
 
 func (c *Config) saveIndex(idx *Index) error { return writePrivateJSON(c.indexFile(), idx) }
 
+func (c *Config) tokenRekey(oldKey, newKey string, record *Record) error {
+	if c.UseKeychain {
+		return c.rekeyKeychainToken(oldKey, newKey, record)
+	}
+	if err := c.tokenSet(newKey, record); err != nil {
+		return err
+	}
+	return c.tokenDelete(oldKey)
+}
+
 func (c *Config) tokenGet(key string) (*Record, error) {
 	if c.UseKeychain {
 		vault, err := c.loadKeychainVault()
 		if err != nil {
 			return nil, err
 		}
-		return vault.Records[key], nil
+		return vault.record(key), nil
 	}
 	store := map[string]*Record{}
 	if _, err := readTokenStore(c, &store); err != nil {
@@ -166,6 +172,8 @@ func (c *Config) tokenGet(key string) (*Record, error) {
 func (c *Config) tokenSet(key string, r *Record) error {
 	if c.UseKeychain {
 		return c.updateKeychainVault(func(vault *keychainVault) {
+			key = vault.canonicalKey(key)
+			delete(vault.DeletedRecords, key)
 			vault.Records[key] = r
 		})
 	}
@@ -208,7 +216,7 @@ func (c *Config) LoadRecords(idx *Index) ([]*Record, error) {
 		key := storeKey(e.Provider, e.Email, e.Org)
 		var r *Record
 		if vault != nil {
-			r = vault.Records[key]
+			r = vault.record(key)
 		} else {
 			var err error
 			r, err = c.tokenGet(key)

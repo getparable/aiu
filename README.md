@@ -140,7 +140,12 @@ macOS may ask once per old item during that migration. If any read or the new wr
 fails, AIU leaves the old items untouched and can retry. Later runs read only the
 single new item, so a rebuilt app needs one Keychain approval rather than one per
 account. The old items remain in Keychain, but their tokens may become stale after
-AIU refreshes the vault. AIU no longer reads them after the new item exists.
+AIU refreshes the vault. Each `AIU_CONFIG_DIR` completes its own migration into the
+shared vault, adding only missing credentials and preserving newer vault tokens.
+Once a configuration has migrated, it no longer reads its legacy items. All
+configurations use the same vault lock. Internal organization rekeying preserves
+the legacy backups; explicitly removing an account deletes its legacy copies and
+prevents another configuration from restoring it during migration.
 Run `aiu migrate-keychain` to do the copy explicitly before opening the app; it
 accesses only AIU's Keychain items and makes no network requests.
 Do not keep an older AIU process running after migration: older builds still write
