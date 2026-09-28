@@ -87,8 +87,10 @@ static OSStatus aiuDescribeAccess(const void *service, UInt32 serviceLen,
 }
 
 // Reads an item with Keychain prompts disabled: success means AIU reads it
-// without asking; a refusal means macOS would have asked.
-static OSStatus aiuSilentRead(const void *service, UInt32 serviceLen, const void *account, UInt32 accountLen) {
+// without asking; a refusal means macOS would have asked. On success the
+// secret is copied to *out for the caller to free.
+static OSStatus aiuSilentRead(const void *service, UInt32 serviceLen, const void *account,
+    UInt32 accountLen, void **out, UInt32 *outLen) {
     Boolean allowed = true;
     SecKeychainGetUserInteractionAllowed(&allowed);
     SecKeychainSetUserInteractionAllowed(false);
@@ -96,6 +98,15 @@ static OSStatus aiuSilentRead(const void *service, UInt32 serviceLen, const void
     void *data = NULL;
     OSStatus status = SecKeychainFindGenericPassword(NULL, serviceLen, service, accountLen, account, &length, &data, NULL);
     if (data) {
+        if (status == errSecSuccess) {
+            *out = malloc(length ? length : 1);
+            if (*out) {
+                memcpy(*out, data, length);
+                *outLen = length;
+            } else {
+                status = errSecAllocate;
+            }
+        }
         memset(data, 0, length);
         SecKeychainItemFreeContent(NULL, data);
     }
@@ -147,18 +158,26 @@ func claudeItemTrustsSecurity(service string) (found, trusted bool, err error) {
 	return true, app && (!partitioned || partitionOK), nil
 }
 
-func silentItemAccess(service, account string) (string, string) {
+// silentItemRead reads one item without ever prompting, returning its secret
+// only when AIU may already read it.
+func silentItemRead(service, account string) (string, string, string) {
 	s, a := C.CBytes([]byte(service)), C.CBytes([]byte(account))
 	defer C.free(s)
 	defer C.free(a)
-	switch status := C.aiuSilentRead(s, C.UInt32(len(service)), a, C.UInt32(len(account))); status {
+	var out unsafe.Pointer
+	var outLen C.UInt32
+	status := C.aiuSilentRead(s, C.UInt32(len(service)), a, C.UInt32(len(account)), &out, &outLen)
+	if out != nil {
+		defer C.free(out)
+	}
+	switch status {
 	case C.errSecSuccess:
-		return AccessGranted, ""
+		return string(C.GoBytes(out, C.int(outLen))), AccessGranted, ""
 	case C.errSecItemNotFound:
-		return AccessMissing, ""
+		return "", AccessMissing, ""
 	case C.errSecInteractionNotAllowed, C.errSecAuthFailed:
-		return AccessNeedsApproval, "macOS will ask before this build of AIU can read its tokens"
+		return "", AccessNeedsApproval, "macOS will ask before this build of AIU can read its tokens"
 	default:
-		return AccessUnknown, fmt.Sprintf("Keychain check failed (OSStatus %d)", int(status))
+		return "", AccessUnknown, fmt.Sprintf("Keychain check failed (OSStatus %d)", int(status))
 	}
 }

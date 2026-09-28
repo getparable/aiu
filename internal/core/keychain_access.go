@@ -2,7 +2,9 @@ package core
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -54,22 +56,64 @@ func (c *Config) claudeKeychainAccess() KeychainAccess {
 	return a
 }
 
+// silentKeychainRead reads one of AIU's own items without ever prompting; tests
+// swap it for a fake Keychain.
+var silentKeychainRead = silentItemRead
+
+// vaultKeychainAccess covers every item loadKeychainVault reads: the vault and,
+// until this configuration has migrated, the old per-account items it copies in.
 func (c *Config) vaultKeychainAccess() KeychainAccess {
 	a := KeychainAccess{ID: "aiu"}
 	if !c.UseKeychain {
 		a.State, a.Detail = AccessNotUsed, "AIU does not keep tokens in the Keychain here"
 		return a
 	}
-	a.State, a.Detail = silentItemAccess(c.StoreService, keychainVaultAccount)
-	if a.State == AccessMissing {
-		a.Detail = "created when you add your first account"
+	raw, state, detail := silentKeychainRead(c.StoreService, keychainVaultAccount)
+	vault := &keychainVault{Version: 1, Records: map[string]*Record{}}
+	switch state {
+	case AccessGranted:
+		if err := json.Unmarshal([]byte(raw), vault); err != nil || vault.Records == nil {
+			a.State, a.Detail = AccessUnknown, "AIU Keychain vault is unreadable"
+			return a
+		}
+		if id, err := c.keychainMigrationID(); err == nil && vault.MigratedConfigs[id] {
+			a.State = AccessGranted
+			return a
+		}
+	case AccessMissing:
+	default:
+		a.State, a.Detail = state, detail
+		return a
+	}
+	keys, err := c.pendingLegacyKeys(vault)
+	if err != nil {
+		a.State, a.Detail = AccessUnknown, err.Error()
+		return a
+	}
+	asking := 0
+	for _, key := range keys {
+		switch _, s, d := silentKeychainRead(c.StoreService, key); s {
+		case AccessNeedsApproval:
+			asking++
+		case AccessUnknown:
+			a.State, a.Detail = AccessUnknown, d
+			return a
+		}
+	}
+	switch {
+	case asking > 0:
+		a.State = AccessNeedsApproval
+		a.Detail = fmt.Sprintf("macOS will ask for %d older AIU Keychain item(s) while AIU copies them into one", asking)
+	case state == AccessMissing && len(keys) == 0:
+		a.State, a.Detail = AccessMissing, "created when you add your first account"
+	default:
+		a.State = AccessGranted
 	}
 	return a
 }
 
-// AllowKeychain reads one item the way AIU normally does, which is what makes
-// macOS ask. Choosing Always Allow there is the approval; the read discards
-// what it gets.
+// AllowKeychain reads the way AIU normally does, which is what makes macOS ask.
+// Choosing Always Allow there is the approval.
 func (c *Config) AllowKeychain(id string) error {
 	switch id {
 	case "claude":
@@ -82,7 +126,9 @@ func (c *Config) AllowKeychain(id string) error {
 		if !c.UseKeychain {
 			return nil
 		}
-		_, _, err := c.ownKeychainRead(keychainVaultAccount)
+		// The same load the app runs, so the prompts come in the order it would
+		// cause them: the vault, then any old items it still has to copy in.
+		_, err := c.loadKeychainVault()
 		return err
 	}
 	return errors.New(`keychain item must be "claude" or "aiu"`)

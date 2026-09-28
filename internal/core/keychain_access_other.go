@@ -10,6 +10,6 @@ func claudeItemTrustsSecurity(service string) (found, trusted bool, err error) {
 	return true, false, errors.New("this build cannot check Keychain access without asking")
 }
 
-func silentItemAccess(service, account string) (string, string) {
-	return AccessUnknown, "this build cannot check Keychain access without asking"
+func silentItemRead(service, account string) (string, string, string) {
+	return "", AccessUnknown, "this build cannot check Keychain access without asking"
 }

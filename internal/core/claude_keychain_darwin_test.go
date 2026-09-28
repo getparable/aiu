@@ -65,7 +65,7 @@ func TestKeychainAccessProbes(t *testing.T) {
 		t.Fatalf("absent item: found=%v err=%v", found, err)
 	}
 	for service, want := range map[string]string{byFramework: AccessGranted, bySecurity: AccessNeedsApproval, bySecurity + "-absent": AccessMissing} {
-		if got, _ := silentItemAccess(service, "example.user"); got != want {
+		if _, got, _ := silentItemRead(service, "example.user"); got != want {
 			t.Fatalf("%s: silent access %s, want %s", service, got, want)
 		}
 	}
