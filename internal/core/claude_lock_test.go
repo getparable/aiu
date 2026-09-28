@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -54,14 +56,14 @@ func TestAcquireDirLockRespectsLiveAndStaleLocks(t *testing.T) {
 	if err := os.Mkdir(path, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := acquireDirLock(path, time.Now().Add(150*time.Millisecond)); !errors.Is(err, errClaudeRefreshing) {
+	if err := acquireDirLock(path, takeoverPath(t), time.Now().Add(150*time.Millisecond)); !errors.Is(err, errClaudeRefreshing) {
 		t.Fatalf("live lock: %v", err)
 	}
 	old := time.Now().Add(-2 * claudeLockStale)
 	if err := os.Chtimes(path, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if err := acquireDirLock(path, time.Now().Add(time.Second)); err != nil {
+	if err := acquireDirLock(path, takeoverPath(t), time.Now().Add(time.Second)); err != nil {
 		t.Fatalf("stale lock not taken over: %v", err)
 	}
 	if st, err := os.Stat(path); err != nil || time.Since(st.ModTime()) > time.Minute {
@@ -167,5 +169,77 @@ func TestCaptureClaudeCodeRereadsAfterClaudeCodesLock(t *testing.T) {
 	saved, err := c.CaptureClaudeCode(t.Context(), "")
 	if err != nil || saved.Record.AccessToken != "at-B" || saved.Record.RefreshToken != "rt-B" {
 		t.Fatalf("saved=%+v err=%v", saved, err)
+	}
+}
+
+func takeoverPath(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(t.TempDir(), ".aiu-credentials.lock")
+}
+
+// A contender that saw a lock stale must not remove the fresh lock another
+// contender has since won in its place.
+func TestRemoveStaleDirLockSparesAFreshWinner(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".oauth_refresh.lock")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * claudeLockStale)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	seen, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Another contender takes it over first and wins a fresh lock.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeStaleDirLock(path, seen, takeoverPath(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("the fresh winner's lock was removed: %v", err)
+	}
+}
+
+// Many contenders racing to take over one stale lock: exactly one holds it at a time.
+func TestAcquireDirLockStaleTakeoverIsExclusive(t *testing.T) {
+	dir := t.TempDir()
+	path, takeover := filepath.Join(dir, ".oauth_refresh.lock"), filepath.Join(dir, ".aiu-credentials.lock")
+	for round := range 10 {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-2 * claudeLockStale)
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+		var holders, peak atomic.Int32
+		var wg sync.WaitGroup
+		for range 8 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := acquireDirLock(path, takeover, time.Now().Add(5*time.Second)); err != nil {
+					t.Error(err)
+					return
+				}
+				n := holders.Add(1)
+				for p := peak.Load(); n > p && !peak.CompareAndSwap(p, n); p = peak.Load() {
+				}
+				time.Sleep(2 * time.Millisecond)
+				holders.Add(-1)
+				_ = os.Remove(path)
+			}()
+		}
+		wg.Wait()
+		if peak.Load() != 1 {
+			t.Fatalf("round %d: %d contenders held the lock at once", round, peak.Load())
+		}
 	}
 }

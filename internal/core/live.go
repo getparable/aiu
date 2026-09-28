@@ -223,7 +223,7 @@ func (c *Config) withClaudeRefreshLock(fn func() error) error {
 		}
 	}()
 	for _, path := range []string{filepath.Join(c.ClaudeDir, ".oauth_refresh.lock"), legacy + ".lock"} {
-		if err := acquireDirLock(path, deadline); err != nil {
+		if err := acquireDirLock(path, c.liveLockPath(Claude), deadline); err != nil {
 			return err
 		}
 		held = append(held, path)
@@ -250,7 +250,7 @@ func (c *Config) withClaudeRefreshLock(fn func() error) error {
 
 // acquireDirLock takes a proper-lockfile lock: mkdir wins it, and an existing
 // one is removed only once stale.
-func acquireDirLock(path string, deadline time.Time) error {
+func acquireDirLock(path, takeover string, deadline time.Time) error {
 	for {
 		err := os.Mkdir(path, 0o700)
 		if err == nil {
@@ -265,7 +265,7 @@ func acquireDirLock(path string, deadline time.Time) error {
 		case errors.Is(statErr, fs.ErrNotExist):
 			continue
 		case statErr == nil && time.Since(st.ModTime()) > claudeLockStale:
-			if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			if err := removeStaleDirLock(path, st, takeover); err != nil {
 				return err
 			}
 			continue
@@ -275,6 +275,31 @@ func acquireDirLock(path string, deadline time.Time) error {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// removeStaleDirLock removes path only while it is still the stale directory
+// seen, checked and removed under AIU's takeover lock. Without that, two
+// contenders that both saw it stale could each remove it, and the second would
+// delete the lock the first had just won. AIU processes cannot interleave here;
+// Claude Code's proper-lockfile takes over stale locks unserialized, a window
+// only its side can close.
+func removeStaleDirLock(path string, seen fs.FileInfo, takeover string) error {
+	return withFileLock(takeover, func() error {
+		now, err := os.Stat(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !os.SameFile(seen, now) || time.Since(now.ModTime()) <= claudeLockStale {
+			return nil // someone already took it over; contend for it again
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		return nil
+	})
 }
 
 func claudeTokenPatch(r *Record) map[string]any {
