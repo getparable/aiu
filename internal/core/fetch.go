@@ -43,6 +43,21 @@ func (c *Config) ensureFresh(ctx context.Context, r *Record, live *LiveClaude, _
 	var next *Record
 	err := c.withClaudeRefreshLock(func() error {
 		var err error
+		if live != nil {
+			// Claude Code may have refreshed while we waited for its lock: the token
+			// in r is then retired. Take its replacement rather than spend it, but
+			// only for the same account — it may have signed in as someone else.
+			current, readErr := c.readClaudeCode()
+			if readErr != nil {
+				return readErr
+			}
+			if current != nil && current.refreshToken() != r.RefreshToken {
+				if m := c.resolveClaudeLive(ctx, current, []*Record{r}); m.Verified && m.Is(r) {
+					next, err = c.adoptClaudeLive(r, current)
+					return err
+				}
+			}
+		}
 		next, err = c.rotate(ctx, r)
 		return err
 	})

@@ -110,20 +110,7 @@ func (c *Config) CaptureClaudeCode(ctx context.Context, label string) (*SavedAcc
 	if live == nil {
 		return nil, errors.New("no Claude Code login found — sign in with `claude` first, or use `aiu login`")
 	}
-	working := &Record{
-		Provider:              Claude,
-		AccessToken:           live.accessToken(),
-		RefreshToken:          live.refreshToken(),
-		ExpiresAt:             live.int64Field("expiresAt"),
-		RefreshTokenExpiresAt: live.int64Field("refreshTokenExpiresAt"),
-		SubscriptionType:      str(live.OAuth["subscriptionType"]),
-		RateLimitTier:         str(live.OAuth["rateLimitTier"]),
-	}
-	if scopes, ok := live.OAuth["scopes"].([]any); ok {
-		for _, s := range scopes {
-			working.Scopes = append(working.Scopes, str(s))
-		}
-	}
+	working := claudeRecordFromLive(live)
 	if working.IsExpired(c.now(), refreshMargin) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -136,6 +123,18 @@ func (c *Config) CaptureClaudeCode(ctx context.Context, label string) (*SavedAcc
 		// This is Claude Code's own token: spend and hand it back under its
 		// refresh lock, so Claude Code cannot spend it too.
 		err := c.withClaudeRefreshLock(func() error {
+			// Claude Code may have refreshed while we waited for its lock; its
+			// current login is the one being added, and may need no refresh now.
+			current, err := c.readClaudeCode()
+			if err != nil {
+				return err
+			}
+			if current != nil && current.refreshToken() != working.RefreshToken {
+				working = claudeRecordFromLive(current)
+				if !working.IsExpired(c.now(), refreshMargin) {
+					return nil
+				}
+			}
 			spent := working.RefreshToken
 			fresh, err := c.refreshClaude(ctx, spent)
 			if err != nil {
@@ -162,6 +161,25 @@ func (c *Config) CaptureClaudeCode(ctx context.Context, label string) (*SavedAcc
 		return nil, err
 	}
 	return saved, nil
+}
+
+// claudeRecordFromLive is the unsaved record for the login Claude Code holds.
+func claudeRecordFromLive(live *LiveClaude) *Record {
+	r := &Record{
+		Provider:              Claude,
+		AccessToken:           live.accessToken(),
+		RefreshToken:          live.refreshToken(),
+		ExpiresAt:             live.int64Field("expiresAt"),
+		RefreshTokenExpiresAt: live.int64Field("refreshTokenExpiresAt"),
+		SubscriptionType:      str(live.OAuth["subscriptionType"]),
+		RateLimitTier:         str(live.OAuth["rateLimitTier"]),
+	}
+	if scopes, ok := live.OAuth["scopes"].([]any); ok {
+		for _, s := range scopes {
+			r.Scopes = append(r.Scopes, str(s))
+		}
+	}
+	return r
 }
 
 // CaptureCodex adds the account Codex is signed in as.

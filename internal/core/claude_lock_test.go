@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -93,5 +94,78 @@ func TestEnsureFreshLocksOnlyClaudeCodesToken(t *testing.T) {
 	}
 	if _, err := os.Stat(held); err != nil {
 		t.Fatalf("Claude Code's live lock was disturbed: %v", err)
+	}
+}
+
+// writeClaudeLogin stands in for Claude Code writing its login file.
+func writeClaudeLogin(t *testing.T, c *Config, access, refresh string, expiresAt int64) {
+	t.Helper()
+	doc := fmt.Sprintf(`{"claudeAiOauth":{"accessToken":%q,"refreshToken":%q,"expiresAt":%d}}`, access, refresh, expiresAt)
+	if err := os.WriteFile(filepath.Join(c.ClaudeDir, ".credentials.json"), []byte(doc), 0o600); err != nil {
+		t.Error(err)
+	}
+}
+
+// holdClaudeLockWhileRefreshing plays Claude Code mid-refresh: it holds the
+// refresh lock, writes its replacement login, then releases the lock.
+func holdClaudeLockWhileRefreshing(t *testing.T, c *Config, access, refresh string) {
+	t.Helper()
+	lock := filepath.Join(c.ClaudeDir, ".oauth_refresh.lock")
+	if err := os.Mkdir(lock, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	expires := c.now().Add(8 * time.Hour).UnixMilli()
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		writeClaudeLogin(t, c, access, refresh, expires)
+		_ = os.Remove(lock)
+	}()
+}
+
+// Claude Code refreshing while AIU waits for its lock retires the token AIU was
+// about to spend; AIU must take the replacement, and only for the same account.
+func TestEnsureFreshRereadsClaudeCodeAfterItsLock(t *testing.T) {
+	for _, tc := range []struct {
+		name, replacementEmail, want string
+	}{
+		{name: "same account adopts Claude Code's refresh", replacementEmail: "me@example.test", want: "at-B"},
+		{name: "another account is never adopted", replacementEmail: "other@example.test", want: "at-A2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			api := newFakeAPI(t)
+			api.emails["at-B"], api.orgs["at-B"] = tc.replacementEmail, [2]string{"org-me", "Org"}
+			api.refresh["rt-A"] = "at-A2" // only reachable if AIU spends the retired token
+			c := testConfig(t, api)
+			if err := os.MkdirAll(c.ClaudeDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			past := c.now().Add(-time.Hour).UnixMilli()
+			writeClaudeLogin(t, c, "at-A", "rt-A", past)
+			live := c.ReadClaudeCode()
+			r := &Record{Provider: Claude, Email: "me@example.test", OrgUUID: "org-me", AccessToken: "at-A", RefreshToken: "rt-A", ExpiresAt: past}
+			holdClaudeLockWhileRefreshing(t, c, "at-B", "rt-B")
+			next, err := c.ensureFresh(t.Context(), r, live, nil, false)
+			if err != nil || next.AccessToken != tc.want {
+				t.Fatalf("access=%v err=%v, want %s", next, err, tc.want)
+			}
+		})
+	}
+}
+
+// Adding Claude Code's account mid-refresh must add its new login, not spend the
+// token Claude Code just retired.
+func TestCaptureClaudeCodeRereadsAfterClaudeCodesLock(t *testing.T) {
+	api := newFakeAPI(t)
+	api.emails["at-B"], api.orgs["at-B"] = "me@example.test", [2]string{"org-me", "Org"}
+	api.usage["at-B"] = `{}`
+	c := testConfig(t, api)
+	if err := os.MkdirAll(c.ClaudeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeClaudeLogin(t, c, "at-A", "rt-A", c.now().Add(-time.Hour).UnixMilli())
+	holdClaudeLockWhileRefreshing(t, c, "at-B", "rt-B")
+	saved, err := c.CaptureClaudeCode(t.Context(), "")
+	if err != nil || saved.Record.AccessToken != "at-B" || saved.Record.RefreshToken != "rt-B" {
+		t.Fatalf("saved=%+v err=%v", saved, err)
 	}
 }
