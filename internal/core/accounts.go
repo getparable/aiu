@@ -133,20 +133,28 @@ func (c *Config) CaptureClaudeCode(ctx context.Context, label string) (*SavedAcc
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 		defer cancel()
-		spent := working.RefreshToken
-		fresh, err := c.refreshClaude(ctx, working.RefreshToken)
+		// This is Claude Code's own token: spend and hand it back under its
+		// refresh lock, so Claude Code cannot spend it too.
+		err := c.withClaudeRefreshLock(func() error {
+			spent := working.RefreshToken
+			fresh, err := c.refreshClaude(ctx, spent)
+			if err != nil {
+				return err
+			}
+			working.AccessToken, working.RefreshToken, working.ExpiresAt = fresh.AccessToken, fresh.RefreshToken, fresh.ExpiresAt
+			if fresh.RefreshTokenExpiresAt > 0 {
+				working.RefreshTokenExpiresAt = fresh.RefreshTokenExpiresAt
+			}
+			if fresh.Scopes != nil {
+				working.Scopes = fresh.Scopes
+			}
+			if _, err := c.handBackClaudeHeld(spent, working); err != nil {
+				return fmt.Errorf("refreshed Claude Code's token but could not save its replacement: %w", err)
+			}
+			return nil
+		})
 		if err != nil {
 			return nil, err
-		}
-		working.AccessToken, working.RefreshToken, working.ExpiresAt = fresh.AccessToken, fresh.RefreshToken, fresh.ExpiresAt
-		if fresh.RefreshTokenExpiresAt > 0 {
-			working.RefreshTokenExpiresAt = fresh.RefreshTokenExpiresAt
-		}
-		if fresh.Scopes != nil {
-			working.Scopes = fresh.Scopes
-		}
-		if _, err := c.handBackClaude(spent, working); err != nil {
-			return nil, fmt.Errorf("refreshed Claude Code's token but could not save its replacement: %w", err)
 		}
 	}
 	saved, err := c.persistAccount(ctx, working, label, "claude-code", true)

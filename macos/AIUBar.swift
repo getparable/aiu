@@ -121,6 +121,16 @@ final class Store {
     var loginURL: URL?
     var loginOutput = ""
 
+    // Keychain onboarding
+    var keychain: [KeychainAccess.Item] = []
+    var keychainError: String?
+    var keychainBusy: String?
+    var keychainAttempted: Set<String> = []
+    /// While the onboarding window is up, nothing else reads the Keychain, so the
+    /// first prompt the user sees is the one the window has just explained.
+    var onboardingOpen = false
+    var needsKeychainApproval: Bool { keychain.contains(where: \.needsApproval) }
+
     var refreshMinutes: Int {
         didSet {
             UserDefaults.standard.set(refreshMinutes, forKey: "refreshMinutes")
@@ -152,7 +162,7 @@ final class Store {
         autoCheckUpdates = UserDefaults.standard.object(forKey: "autoCheckUpdates") as? Bool ?? true
         scheduleTimer()
         scheduleUpdateTimer()
-        Task { await refresh() }
+        Task { await start() }
         if autoCheckUpdates { Task { await checkForUpdates() } }
     }
 
@@ -215,9 +225,40 @@ final class Store {
         group(provider).sorted { ($0.rank ?? .max) < ($1.rank ?? .max) }
     }
 
+    /// Checks the Keychain first, without prompting, so an approval macOS would ask
+    /// for is explained in the onboarding window before anything triggers it.
+    private func start() async {
+        if ProcessInfo.processInfo.environment["AIU_JSON_FIXTURE"] == nil {
+            await checkKeychain()
+            if keychain.contains(where: \.certainlyPrompts) {
+                OnboardingWindow.show(self)
+                return
+            }
+        }
+        await refresh()
+    }
+
+    func checkKeychain() async {
+        let report = await KeychainAccess.status()
+        keychain = report.items
+        if report.items.isEmpty { keychainError = report.error }
+    }
+
+    /// Runs the read that makes macOS ask, then rechecks: choosing Allow instead of
+    /// Always Allow succeeds once but leaves the item still needing approval.
+    func allowKeychain(_ id: String) async {
+        guard keychainBusy == nil else { return }
+        keychainBusy = id
+        defer { keychainBusy = nil }
+        let report = await KeychainAccess.allow(id)
+        keychainAttempted.insert(id)
+        keychainError = report.error
+        if !report.items.isEmpty { keychain = report.items }
+    }
+
     /// Cheap to call often: aiu answers from its cache until an account's 5-minute spacing has passed.
     func refresh() async {
-        guard !loading else { return }
+        guard !loading, !onboardingOpen else { return }
         loading = true
         defer { loading = false }
         // Development aid: render a saved `aiu --json` instead of calling the CLI.
@@ -1154,6 +1195,22 @@ struct SettingsView: View {
         }
     }
 
+    /// Reopens the onboarding window, which rechecks every item on appearing.
+    @ViewBuilder
+    private var keychainAccess: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Keychain access")
+                Text(store.needsKeychainApproval ? "macOS will ask before AIU can read a login" : "Check which logins macOS would ask about")
+                    .font(.caption2)
+                    .foregroundStyle(store.needsKeychainApproval ? AnyShapeStyle(Palette.accent) : AnyShapeStyle(.tertiary))
+                    .wrapsVertically()
+            }
+            Spacer(minLength: 8)
+            Button("Review") { OnboardingWindow.show(store) }.buttonStyle(.glass)
+        }
+    }
+
     /// Whether a newer release exists, and the command that installs it. aiu never
     /// replaces itself — a Homebrew install belongs to Homebrew, and a build from a
     /// clone belongs to the clone — so this reports and hands over the command.
@@ -1246,6 +1303,8 @@ struct SettingsView: View {
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .wrapsVertically()
+            Divider().opacity(0.4)
+            keychainAccess
             Divider().opacity(0.4)
             updates
             Divider().opacity(0.4)

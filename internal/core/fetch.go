@@ -18,7 +18,7 @@ import (
 // ensureFresh refreshes r when its access token is (nearly) expired, stores the new
 // pair, and hands it back to the CLI when the CLI still holds the refresh token just
 // spent — otherwise the CLI's next run would redeem a retired token and lose its login.
-func (c *Config) ensureFresh(ctx context.Context, r *Record, _ *LiveClaude, _ *LiveCodex, force bool) (*Record, error) {
+func (c *Config) ensureFresh(ctx context.Context, r *Record, live *LiveClaude, _ *LiveCodex, force bool) (*Record, error) {
 	if !force && !r.IsExpired(c.now(), refreshMargin) {
 		return r, nil
 	}
@@ -32,6 +32,26 @@ func (c *Config) ensureFresh(ctx context.Context, r *Record, _ *LiveClaude, _ *L
 	// credential. Finish receiving and saving that response before exiting.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 	defer cancel()
+	// A token Claude Code does not hold cannot race it. Callers that pass no
+	// live login do not know, so they take the lock.
+	if r.Provider != Claude || (live != nil && live.refreshToken() != r.RefreshToken) {
+		return c.rotate(ctx, r)
+	}
+	// Claude Code may hold this same refresh token. Holding its refresh lock
+	// means its own locked re-read sees our hand-back instead of spending the
+	// token a second time.
+	var next *Record
+	err := c.withClaudeRefreshLock(func() error {
+		var err error
+		next, err = c.rotate(ctx, r)
+		return err
+	})
+	return next, err
+}
+
+// rotate spends r's refresh token, stores the new pair and hands it back. For
+// Claude the caller holds Claude Code's refresh lock.
+func (c *Config) rotate(ctx context.Context, r *Record) (*Record, error) {
 	spent := r.RefreshToken
 	next := *r
 	if r.Provider == Codex {
@@ -62,7 +82,7 @@ func (c *Config) ensureFresh(ctx context.Context, r *Record, _ *LiveClaude, _ *L
 	}
 	switch {
 	case r.Provider == Claude:
-		if _, err := c.handBackClaude(spent, &next); err != nil {
+		if _, err := c.handBackClaudeHeld(spent, &next); err != nil {
 			c.Warn(fmt.Sprintf("refreshed %s but could not update Claude Code's credentials: %v", r.Email, err))
 		}
 	case r.Provider == Codex:
@@ -482,9 +502,20 @@ func (c *Config) Collect(ctx context.Context, opts CollectOptions) (*Snapshot, e
 		}
 		records = kept
 	}
-	liveClaude, claudeMatch, records := c.SyncClaude(ctx, records, !opts.NoSync)
-	liveCodex, codexMatch, records := c.SyncCodex(records, !opts.NoSync)
-	snap.Live[Claude], snap.Live[Codex] = claudeMatch, codexMatch
+	// Only a provider with an account in view needs its CLI's login; reading
+	// Claude Code's is a Keychain access that may prompt.
+	inView := map[Provider]bool{}
+	for _, r := range records {
+		inView[r.Provider] = true
+	}
+	var liveClaude *LiveClaude
+	var liveCodex *LiveCodex
+	if inView[Claude] {
+		liveClaude, snap.Live[Claude], records = c.SyncClaude(ctx, records, !opts.NoSync)
+	}
+	if inView[Codex] {
+		liveCodex, snap.Live[Codex], records = c.SyncCodex(records, !opts.NoSync)
+	}
 
 	// The live docs are shared by every goroutine that may hand a refresh back.
 	var mu sync.Mutex

@@ -3,10 +3,12 @@ package core
 import (
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"os/user"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"time"
 )
@@ -38,6 +40,10 @@ func (l *LiveClaude) int64Field(key string) int64 {
 	return int64(n)
 }
 
+// claudeKeychainRead is the only way AIU reads Claude Code's Keychain item;
+// tests swap it to prove a path never touches it.
+var claudeKeychainRead = readClaudeKeychain
+
 // ReadClaudeCode returns Claude Code's current login, or nil when it has none.
 func (c *Config) ReadClaudeCode() *LiveClaude {
 	live, _ := c.readClaudeCode()
@@ -57,7 +63,7 @@ func (c *Config) readClaudeCode() (*LiveClaude, error) {
 	if runtime.GOOS != "darwin" {
 		return nil, nil
 	}
-	raw, account, ok, err := readKeychainItem(c.ClaudeService, "")
+	raw, account, ok, err := claudeKeychainRead(c.ClaudeService)
 	if err != nil {
 		return nil, err
 	}
@@ -88,29 +94,38 @@ func parseLiveClaude(data []byte) *LiveClaude {
 	return &LiveClaude{Doc: doc, OAuth: oauth}
 }
 
+var claudeAccountName = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+
+// currentUser is the account Claude Code files a new login under, and the one
+// it reads back: $USER, else the OS username, else a fixed placeholder.
 func currentUser() string {
-	if u := os.Getenv("USER"); u != "" {
-		return u
+	name := os.Getenv("USER")
+	if name == "" {
+		if u, err := user.Current(); err == nil {
+			name = u.Username
+		}
 	}
-	if u, err := user.Current(); err == nil {
-		return u.Username
+	if !claudeAccountName.MatchString(name) {
+		return "claude-code-user"
 	}
-	return "claude-code-user"
+	return name
 }
 
 // writeClaudeCode merges patch into Claude Code's oauth block (or replaces the block)
 // and writes it back where it came from. live may be nil when Claude Code has no login.
 func (c *Config) writeClaudeCode(live *LiveClaude, patch map[string]any, replace bool) (*LiveClaude, error) {
 	var written *LiveClaude
-	err := withFileLock(c.liveLockPath(Claude), func() error {
-		// Use the newest document so another AIU write cannot lose sibling fields.
-		current, readErr := c.readClaudeCode()
-		if readErr != nil {
-			return readErr
-		}
-		var writeErr error
-		written, writeErr = c.writeClaudeCodeUnlocked(current, patch, replace)
-		return writeErr
+	err := c.withClaudeRefreshLock(func() error {
+		return withFileLock(c.liveLockPath(Claude), func() error {
+			// Use the newest document so another AIU write cannot lose sibling fields.
+			current, readErr := c.readClaudeCode()
+			if readErr != nil {
+				return readErr
+			}
+			var writeErr error
+			written, writeErr = c.writeClaudeCodeUnlocked(current, patch, replace)
+			return writeErr
+		})
 	})
 	return written, err
 }
@@ -150,15 +165,17 @@ func (c *Config) writeClaudeCodeUnlocked(live *LiveClaude, patch map[string]any,
 	if next.fromFile {
 		err = writePrivateFile(next.path, data, false)
 	} else {
-		err = keychainWrite(next.service, next.account, string(data))
+		err = writeClaudeKeychain(next.service, next.account, string(data))
 	}
 	return next, err
 }
 
-// handBackClaude only replaces the refresh token this operation spent. The read
-// and write share AIU's live credential lock. External writers do not use that
-// lock, so the reread narrows their race without eliminating it.
-func (c *Config) handBackClaude(spent string, r *Record) (bool, error) {
+// handBackClaudeHeld only replaces the refresh token this operation spent. The
+// caller holds Claude Code's refresh lock, which is not reentrant; this adds
+// AIU's live credential lock around the reread and write. Claude Code takes its
+// lock only to refresh; its login, logout and other credential writes do not,
+// so the reread narrows those races without eliminating them.
+func (c *Config) handBackClaudeHeld(spent string, r *Record) (bool, error) {
 	var changed bool
 	err := withFileLock(c.liveLockPath(Claude), func() error {
 		live, readErr := c.readClaudeCode()
@@ -173,6 +190,91 @@ func (c *Config) handBackClaude(spent string, r *Record) (bool, error) {
 		return err
 	})
 	return changed, err
+}
+
+// Claude Code serializes its OAuth refresh with proper-lockfile directory locks
+// (verified in 2.1.284): <login dir>/.oauth_refresh.lock, then the legacy
+// <realpath(login dir)>.lock. A lock whose mtime is a minute old is stale, so
+// the holder touches it every 5s. Without an owner record Claude Code never
+// takes over a live-looking lock; it waits for it to go stale.
+const (
+	claudeLockStale = time.Minute
+	claudeLockTouch = 5 * time.Second
+)
+
+var errClaudeRefreshing = errors.New("Claude Code is refreshing its login; try again shortly")
+
+// withClaudeRefreshLock runs fn holding Claude Code's refresh locks, so AIU never
+// spends or hands back a token while Claude Code is refreshing. With no Claude
+// Code login directory there is nothing to race, and fn runs unlocked.
+func (c *Config) withClaudeRefreshLock(fn func() error) error {
+	if st, err := os.Stat(c.ClaudeDir); err != nil || !st.IsDir() {
+		return fn()
+	}
+	legacy := c.ClaudeDir
+	if real, err := filepath.EvalSymlinks(c.ClaudeDir); err == nil {
+		legacy = real
+	}
+	deadline := time.Now().Add(lockWait)
+	var held []string
+	defer func() {
+		for i := len(held) - 1; i >= 0; i-- {
+			_ = os.Remove(held[i])
+		}
+	}()
+	for _, path := range []string{filepath.Join(c.ClaudeDir, ".oauth_refresh.lock"), legacy + ".lock"} {
+		if err := acquireDirLock(path, deadline); err != nil {
+			return err
+		}
+		held = append(held, path)
+	}
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		tick := time.NewTicker(claudeLockTouch)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case now := <-tick.C:
+				for _, path := range held {
+					_ = os.Chtimes(path, now, now)
+				}
+			}
+		}
+	}()
+	defer func() { close(stop); <-done }()
+	return fn()
+}
+
+// acquireDirLock takes a proper-lockfile lock: mkdir wins it, and an existing
+// one is removed only once stale.
+func acquireDirLock(path string, deadline time.Time) error {
+	for {
+		err := os.Mkdir(path, 0o700)
+		if err == nil {
+			now := time.Now()
+			return os.Chtimes(path, now, now)
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+		st, statErr := os.Stat(path)
+		switch {
+		case errors.Is(statErr, fs.ErrNotExist):
+			continue
+		case statErr == nil && time.Since(st.ModTime()) > claudeLockStale:
+			if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return err
+			}
+			continue
+		}
+		if time.Now().After(deadline) {
+			return errClaudeRefreshing
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func claudeTokenPatch(r *Record) map[string]any {

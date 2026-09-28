@@ -129,10 +129,12 @@ Reading usage costs no quota, but the endpoints throttle hard. Every AIU process
 | --- | --- |
 | Token copies | One macOS Keychain item, service `aiu`, account `aiu-accounts-v1` (or `~/.config/aiu/tokens.json` with `AIU_STORE=file`) |
 | Account index, cache, lock | `~/.config/aiu/` |
-| Claude Code's login (read; written by `switch` and refresh hand-back) | Keychain `Claude Code-credentials`, `~/.claude.json` |
+| Claude Code's login (read; written by `switch` and refresh hand-back, under Claude Code's own refresh lock) | Keychain `Claude Code-credentials` (suffixed per `CLAUDE_SECURESTORAGE_CONFIG_DIR` or `CLAUDE_CONFIG_DIR`, as Claude Code does), `~/.claude.json` |
 | Codex's login (same) | `~/.codex/auth.json` |
 
-Keychain access may prompt for approval when AIU first reads or updates an existing item. If AIU creates Claude Code's Keychain item during a switch, macOS may ask Claude Code to approve access on its next read. Release builds enable cgo for native Keychain access. Builds without cgo cannot read Keychain items, even when AIU's own store uses `AIU_STORE=file`.
+AIU reads and writes Claude Code's Keychain item through `/usr/bin/security`, exactly as Claude Code does, so the item never has to trust a second app and approving one tool cannot lock out the other. If an older AIU release left the item trusting only AIU, macOS may ask once more when `security` next reads it; after that approval, both tools go through the same trusted tool. A write briefly passes the hex-encoded login as a `security` argument, which macOS shows only to your own processes and root; Claude Code writes large logins the same way.
+
+Keychain access to AIU's own item may prompt for approval when a new build first reads or updates it. `aiu keychain` reports, without prompting, which items macOS would ask about; `aiu keychain allow claude|aiu` triggers that prompt on purpose, and the menu bar app shows the same check in a Keychain Access window at launch and under Settings → Keychain access. Release builds enable cgo for native Keychain access to AIU's own item. Builds without cgo cannot use it and need `AIU_STORE=file`, though they can still read Claude Code's login.
 
 Older AIU builds stored one Keychain item per tracked account. The first run after
 upgrading reads those items and copies them into the single `aiu-accounts-v1` item.

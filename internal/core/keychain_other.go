@@ -13,7 +13,3 @@ func keychainDelete(service, account string) error {
 }
 
 func keychainRead(service, account string) (string, bool, error) { return "", false, nil }
-
-func readKeychainItem(service, account string) (string, string, bool, error) {
-	return "", "", false, nil
-}

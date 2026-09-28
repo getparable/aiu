@@ -188,6 +188,7 @@ func run(argv []string, cfg *core.Config) int {
 		"link":             a.link,
 		"update":           a.update,
 		"migrate-keychain": a.migrateKeychain,
+		"keychain":         a.keychain,
 		"menubar":          a.menuBar, "gui": a.menuBar,
 		"resets": a.resets, "reset": a.reset, "auto-reset": a.autoReset,
 		"help": func(context.Context) error { a.help(); return nil },
@@ -588,6 +589,7 @@ func (a *app) help() {
   aiu list | remove <email|label> | sync | whoami
   aiu link [install|remove|status]                    add or drop the ~/.local/bin/aiu shortcut
   aiu migrate-keychain                                copy old AIU tokens into one Keychain item
+  aiu keychain [allow claude|aiu]                     which Keychain items macOS would ask about
   aiu update [--force]                                is there a newer release? (never installs)
   aiu gui | menubar                                    open the bundled desktop app
 

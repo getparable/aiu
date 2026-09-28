@@ -113,7 +113,7 @@ type Config struct {
 	StoreService string // keychain service for our own token copies
 	keychainIO   *keychainIO
 
-	ClaudeDir          string // Claude Code's config dir (.credentials.json lives here off macOS)
+	ClaudeDir          string // where Claude Code keeps its login (.credentials.json off macOS)
 	ClaudeService      string // Claude Code's keychain service
 	ClaudeGlobalConfig string // .claude.json with the cached oauthAccount block
 	CodexHome          string
@@ -173,14 +173,25 @@ func DefaultConfig() *Config {
 		c.ClaudeGlobalConfig = filepath.Join(home, ".claude.json")
 		c.ClaudeService = ClaudeKeychainService("")
 	}
+	// Claude Code keeps its login under CLAUDE_SECURESTORAGE_CONFIG_DIR whenever that
+	// is set, even to "": empty means the default ~/.claude login and service, with
+	// no suffix, whatever CLAUDE_CONFIG_DIR says. .claude.json does not move.
+	if dir, ok := os.LookupEnv("CLAUDE_SECURESTORAGE_CONFIG_DIR"); ok {
+		c.ClaudeService = ClaudeKeychainService(dir)
+		if dir == "" {
+			dir = filepath.Join(home, ".claude")
+		}
+		c.ClaudeDir = norm.NFC.String(dir)
+	}
 	if s := os.Getenv("AIU_CLAUDE_SERVICE"); s != "" {
 		c.ClaudeService = s
 	}
 	return c
 }
 
-// ClaudeKeychainService mirrors Claude Code (verified in 2.1.273): the service gains
-// "-" + sha256(dir)[:8] only when CLAUDE_CONFIG_DIR is set, hashed exactly as spelled.
+// ClaudeKeychainService mirrors Claude Code (verified in 2.1.284): the service gains
+// "-" + sha256(dir)[:8] only for a non-empty CLAUDE_SECURESTORAGE_CONFIG_DIR or,
+// when that is unset, CLAUDE_CONFIG_DIR, hashed as spelled after NFC normalization.
 func ClaudeKeychainService(configDir string) string {
 	if configDir == "" {
 		return "Claude Code-credentials"
