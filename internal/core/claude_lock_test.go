@@ -3,6 +3,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
@@ -56,14 +57,14 @@ func TestAcquireDirLockRespectsLiveAndStaleLocks(t *testing.T) {
 	if err := os.Mkdir(path, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := acquireDirLock(path, takeoverPath(t), time.Now().Add(150*time.Millisecond)); !errors.Is(err, errClaudeRefreshing) {
+	if _, err := acquireDirLock(path, takeoverPath(t), time.Now().Add(150*time.Millisecond)); !errors.Is(err, errClaudeRefreshing) {
 		t.Fatalf("live lock: %v", err)
 	}
 	old := time.Now().Add(-2 * claudeLockStale)
 	if err := os.Chtimes(path, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if err := acquireDirLock(path, takeoverPath(t), time.Now().Add(time.Second)); err != nil {
+	if _, err := acquireDirLock(path, takeoverPath(t), time.Now().Add(time.Second)); err != nil {
 		t.Fatalf("stale lock not taken over: %v", err)
 	}
 	if st, err := os.Stat(path); err != nil || time.Since(st.ModTime()) > time.Minute {
@@ -225,7 +226,7 @@ func TestAcquireDirLockStaleTakeoverIsExclusive(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				if err := acquireDirLock(path, takeover, time.Now().Add(5*time.Second)); err != nil {
+				if _, err := acquireDirLock(path, takeover, time.Now().Add(5*time.Second)); err != nil {
 					t.Error(err)
 					return
 				}
@@ -241,5 +242,84 @@ func TestAcquireDirLockStaleTakeoverIsExclusive(t *testing.T) {
 		if peak.Load() != 1 {
 			t.Fatalf("round %d: %d contenders held the lock at once", round, peak.Load())
 		}
+	}
+}
+
+// replaceDirLock plays Claude Code taking over a lock that went stale while its
+// holder was paused.
+func replaceDirLock(t *testing.T, path string) fs.FileInfo {
+	t.Helper()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().Add(time.Second)
+	if err := os.Chtimes(path, later, later); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info
+}
+
+// After a pause long enough for Claude Code to take a lock over, AIU's heartbeat
+// and release must leave Claude Code's replacement lock untouched.
+func TestHeldDirLockLeavesAReplacementAlone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".oauth_refresh.lock")
+	lock, err := acquireDirLock(path, takeoverPath(t), time.Now().Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	theirs := replaceDirLock(t, path)
+	lock.touch(time.Now().Add(time.Hour))
+	lock.release()
+	now, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("release removed Claude Code's replacement lock: %v", err)
+	}
+	if !now.ModTime().Equal(theirs.ModTime()) {
+		t.Fatalf("heartbeat touched Claude Code's replacement lock: %v -> %v", theirs.ModTime(), now.ModTime())
+	}
+
+	// An owned lock is still kept fresh and released.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	lock, err = acquireDirLock(path, takeoverPath(t), time.Now().Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := time.Now().Add(time.Minute)
+	lock.touch(stamp)
+	if now, err := os.Stat(path); err != nil || !now.ModTime().Equal(stamp) {
+		t.Fatalf("owned lock not touched: %v %v", now, err)
+	}
+	lock.release()
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("owned lock not released: %v", err)
+	}
+}
+
+// Releasing withClaudeRefreshLock after a takeover mid-callback must not delete
+// the lock Claude Code now holds.
+func TestWithClaudeRefreshLockSparesATakeoverOnRelease(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".claude")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	c := &Config{ClaudeDir: dir, Dir: t.TempDir()}
+	path := filepath.Join(dir, ".oauth_refresh.lock")
+	if err := c.withClaudeRefreshLock(func() error {
+		replaceDirLock(t, path)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("Claude Code's lock was removed on release: %v", err)
 	}
 }

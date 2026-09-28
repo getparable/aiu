@@ -216,17 +216,18 @@ func (c *Config) withClaudeRefreshLock(fn func() error) error {
 		legacy = real
 	}
 	deadline := time.Now().Add(lockWait)
-	var held []string
+	var held []*heldDirLock
 	defer func() {
 		for i := len(held) - 1; i >= 0; i-- {
-			_ = os.Remove(held[i])
+			held[i].release()
 		}
 	}()
 	for _, path := range []string{filepath.Join(c.ClaudeDir, ".oauth_refresh.lock"), legacy + ".lock"} {
-		if err := acquireDirLock(path, c.liveLockPath(Claude), deadline); err != nil {
+		lock, err := acquireDirLock(path, c.liveLockPath(Claude), deadline)
+		if err != nil {
 			return err
 		}
-		held = append(held, path)
+		held = append(held, lock)
 	}
 	stop, done := make(chan struct{}), make(chan struct{})
 	go func() {
@@ -238,8 +239,8 @@ func (c *Config) withClaudeRefreshLock(fn func() error) error {
 			case <-stop:
 				return
 			case now := <-tick.C:
-				for _, path := range held {
-					_ = os.Chtimes(path, now, now)
+				for _, lock := range held {
+					lock.touch(now)
 				}
 			}
 		}
@@ -248,17 +249,57 @@ func (c *Config) withClaudeRefreshLock(fn func() error) error {
 	return fn()
 }
 
+// heldDirLock is a proper-lockfile lock this process won, identified by its
+// directory and the mtime this process last stamped on it. A lock can go stale
+// while its holder is paused (a sleeping Mac), and Claude Code may then rightly
+// replace it; touching or removing by path alone would refresh or delete Claude
+// Code's lock. So every touch and release first checks the lock is still ours,
+// the way proper-lockfile detects a compromised lock.
+type heldDirLock struct {
+	path string
+	info fs.FileInfo
+}
+
+func (l *heldDirLock) owned() bool {
+	now, err := os.Stat(l.path)
+	return err == nil && os.SameFile(l.info, now) && now.ModTime().Equal(l.info.ModTime())
+}
+
+// touch keeps an owned lock fresh; a lock someone else now holds is left alone.
+func (l *heldDirLock) touch(t time.Time) {
+	if !l.owned() || os.Chtimes(l.path, t, t) != nil {
+		return
+	}
+	if info, err := os.Stat(l.path); err == nil {
+		l.info = info
+	}
+}
+
+// release removes the lock only while it is still ours.
+func (l *heldDirLock) release() {
+	if l.owned() {
+		_ = os.Remove(l.path)
+	}
+}
+
 // acquireDirLock takes a proper-lockfile lock: mkdir wins it, and an existing
 // one is removed only once stale.
-func acquireDirLock(path, takeover string, deadline time.Time) error {
+func acquireDirLock(path, takeover string, deadline time.Time) (*heldDirLock, error) {
 	for {
 		err := os.Mkdir(path, 0o700)
 		if err == nil {
 			now := time.Now()
-			return os.Chtimes(path, now, now)
+			if err := os.Chtimes(path, now, now); err != nil {
+				return nil, err
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				return nil, err
+			}
+			return &heldDirLock{path: path, info: info}, nil
 		}
 		if !errors.Is(err, fs.ErrExist) {
-			return err
+			return nil, err
 		}
 		st, statErr := os.Stat(path)
 		switch {
@@ -266,12 +307,12 @@ func acquireDirLock(path, takeover string, deadline time.Time) error {
 			continue
 		case statErr == nil && time.Since(st.ModTime()) > claudeLockStale:
 			if err := removeStaleDirLock(path, st, takeover); err != nil {
-				return err
+				return nil, err
 			}
 			continue
 		}
 		if time.Now().After(deadline) {
-			return errClaudeRefreshing
+			return nil, errClaudeRefreshing
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
