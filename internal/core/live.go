@@ -265,12 +265,18 @@ func (l *heldDirLock) owned() bool {
 	return err == nil && os.SameFile(l.info, now) && now.ModTime().Equal(l.info.ModTime())
 }
 
+// touchLockPath stamps a lock directory; tests swap it to interleave a takeover.
+var touchLockPath = os.Chtimes
+
 // touch keeps an owned lock fresh; a lock someone else now holds is left alone.
+// The new stamp is adopted only on the directory this process holds: if Claude
+// Code replaced it between the check and the touch, the old identity is kept, so
+// the replacement is never mistaken for ours and owned() reports the loss.
 func (l *heldDirLock) touch(t time.Time) {
-	if !l.owned() || os.Chtimes(l.path, t, t) != nil {
+	if !l.owned() || touchLockPath(l.path, t, t) != nil {
 		return
 	}
-	if info, err := os.Stat(l.path); err == nil {
+	if info, err := os.Stat(l.path); err == nil && os.SameFile(l.info, info) {
 		l.info = info
 	}
 }

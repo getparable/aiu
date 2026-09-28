@@ -323,3 +323,27 @@ func TestWithClaudeRefreshLockSparesATakeoverOnRelease(t *testing.T) {
 		t.Fatalf("Claude Code's lock was removed on release: %v", err)
 	}
 }
+
+// A takeover landing between touch's ownership check and its stamp must not make
+// AIU adopt Claude Code's replacement, or release would delete it.
+func TestHeldDirLockTouchNeverAdoptsAReplacement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".oauth_refresh.lock")
+	lock, err := acquireDirLock(path, takeoverPath(t), time.Now().Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := touchLockPath
+	t.Cleanup(func() { touchLockPath = previous })
+	touchLockPath = func(name string, atime, mtime time.Time) error {
+		replaceDirLock(t, name) // Claude Code takes over right after the check
+		return os.Chtimes(name, atime, mtime)
+	}
+	lock.touch(time.Now().Add(time.Minute))
+	if lock.owned() {
+		t.Fatal("AIU adopted Claude Code's replacement lock as its own")
+	}
+	lock.release()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("release removed Claude Code's replacement lock: %v", err)
+	}
+}
