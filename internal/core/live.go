@@ -249,41 +249,45 @@ func (c *Config) withClaudeRefreshLock(fn func() error) error {
 	return fn()
 }
 
-// heldDirLock is a proper-lockfile lock this process won, identified by its
-// directory and the mtime this process last stamped on it. A lock can go stale
+// heldDirLock is a proper-lockfile lock this process won. A lock can go stale
 // while its holder is paused (a sleeping Mac), and Claude Code may then rightly
 // replace it; touching or removing by path alone would refresh or delete Claude
-// Code's lock. So every touch and release first checks the lock is still ours,
-// the way proper-lockfile detects a compromised lock.
+// Code's lock. So the lock directory stays open while held: the open handle is
+// its identity, and it keeps the inode allocated, so a replacement can never
+// reuse its number (Linux reuses freed inodes at once) and look like ours. Every
+// touch and release first checks the path still names that directory.
 type heldDirLock struct {
 	path string
-	info fs.FileInfo
+	dir  *os.File
 }
 
 func (l *heldDirLock) owned() bool {
+	held, err := l.dir.Stat()
+	if err != nil {
+		return false
+	}
 	now, err := os.Stat(l.path)
-	return err == nil && os.SameFile(l.info, now) && now.ModTime().Equal(l.info.ModTime())
+	return err == nil && os.SameFile(held, now)
 }
 
 // touchLockPath stamps a lock directory; tests swap it to interleave a takeover.
 var touchLockPath = os.Chtimes
 
 // touch keeps an owned lock fresh; a lock someone else now holds is left alone.
-// The new stamp is adopted only on the directory this process holds: if Claude
-// Code replaced it between the check and the touch, the old identity is kept, so
-// the replacement is never mistaken for ours and owned() reports the loss.
+// A takeover landing between the check and the stamp can only refresh Claude
+// Code's lock, never make it look like ours: identity is the open directory.
 func (l *heldDirLock) touch(t time.Time) {
-	if !l.owned() || touchLockPath(l.path, t, t) != nil {
-		return
-	}
-	if info, err := os.Stat(l.path); err == nil && os.SameFile(l.info, info) {
-		l.info = info
+	if l.owned() {
+		_ = touchLockPath(l.path, t, t)
 	}
 }
 
-// release removes the lock only while it is still ours.
+// release removes the lock only while it is still ours. The handle is closed
+// first, since Windows cannot remove a directory held open.
 func (l *heldDirLock) release() {
-	if l.owned() {
+	owned := l.owned()
+	_ = l.dir.Close()
+	if owned {
 		_ = os.Remove(l.path)
 	}
 }
@@ -295,14 +299,15 @@ func acquireDirLock(path, takeover string, deadline time.Time) (*heldDirLock, er
 		err := os.Mkdir(path, 0o700)
 		if err == nil {
 			now := time.Now()
-			if err := os.Chtimes(path, now, now); err != nil {
-				return nil, err
+			dir, err := os.Open(path)
+			if err == nil {
+				if err = os.Chtimes(path, now, now); err == nil {
+					return &heldDirLock{path: path, dir: dir}, nil
+				}
+				_ = dir.Close()
 			}
-			info, err := os.Stat(path)
-			if err != nil {
-				return nil, err
-			}
-			return &heldDirLock{path: path, info: info}, nil
+			_ = os.Remove(path) // never leave a lock behind that nothing holds
+			return nil, err
 		}
 		if !errors.Is(err, fs.ErrExist) {
 			return nil, err

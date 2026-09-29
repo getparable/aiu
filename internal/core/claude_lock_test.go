@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -226,7 +227,8 @@ func TestAcquireDirLockStaleTakeoverIsExclusive(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				if _, err := acquireDirLock(path, takeover, time.Now().Add(5*time.Second)); err != nil {
+				lock, err := acquireDirLock(path, takeover, time.Now().Add(5*time.Second))
+				if err != nil {
 					t.Error(err)
 					return
 				}
@@ -235,7 +237,7 @@ func TestAcquireDirLockStaleTakeoverIsExclusive(t *testing.T) {
 				}
 				time.Sleep(2 * time.Millisecond)
 				holders.Add(-1)
-				_ = os.Remove(path)
+				lock.release()
 			}()
 		}
 		wg.Wait()
@@ -246,9 +248,13 @@ func TestAcquireDirLockStaleTakeoverIsExclusive(t *testing.T) {
 }
 
 // replaceDirLock plays Claude Code taking over a lock that went stale while its
-// holder was paused.
+// holder was paused. Windows cannot remove a directory a process holds open,
+// which is that protection itself, so the scenario cannot arise there.
 func replaceDirLock(t *testing.T, path string) fs.FileInfo {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows refuses to remove a lock directory its holder keeps open")
+	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
@@ -289,6 +295,7 @@ func TestHeldDirLockLeavesAReplacementAlone(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
+	_ = lock.dir.Close()
 	lock, err = acquireDirLock(path, takeoverPath(t), time.Now().Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
