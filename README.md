@@ -187,7 +187,7 @@ Releases ship through Homebrew, across two repositories: this one, and the tap a
    `main` with nothing uncommitted:
    ```sh
    make tag
-   gh release create v0.3.2 --title "aiu 0.3.2" --latest --notes-file docs/releases/v0.3.2.md
+   gh release create v0.3.3 --title "aiu 0.3.3" --latest --notes-file docs/releases/v0.3.3.md
    ```
    `make tag` derives the tag from `VERSION`, so the two cannot disagree — which they have,
    twice: the binary then reports the wrong version and `aiu update` either nags about an
@@ -196,7 +196,7 @@ Releases ship through Homebrew, across two repositories: this one, and the tap a
    CI checks the same thing on every pushed tag, in case one is made by hand.
 2. **Build the bottle.** Install a Developer ID Application certificate on the build
    machine first. In the local tap checkout, change the formula's source URL and
-   source tarball SHA-256 to v0.3.2 and remove its old `bottle do` block. Keep this
+   source tarball SHA-256 to v0.3.3 and remove its old `bottle do` block. Keep this
    formula edit local until the new bottle is uploaded. Otherwise Homebrew builds the
    old version again. Homebrew's build sandbox can hide the signing identity from
    `make app`, so sign the installed app outside that sandbox before bottling it.
@@ -216,7 +216,7 @@ Releases ship through Homebrew, across two repositories: this one, and the tap a
    codesign --force --timestamp --sign "$AIU_SIGN_ID" "$AIU_BOTTLE_APP"
    make verify-release-signature APP="$AIU_BOTTLE_APP"
    brew bottle --json --no-rebuild \
-     --root-url="https://github.com/getparable/aiu/releases/download/v0.3.2" \
+     --root-url="https://github.com/getparable/aiu/releases/download/v0.3.3" \
      getparable/tap/aiu
    ```
    Keep the `bottle do` block it prints — step 4 needs it.
@@ -224,8 +224,8 @@ Releases ship through Homebrew, across two repositories: this one, and the tap a
    URL has *one*; the `.json` manifest spells out both as `local_filename` and `filename`.
    Upload the wrong one and every install quietly compiles instead.
    ```sh
-   cp aiu--0.3.2.arm64_golden_gate.bottle.tar.gz aiu-0.3.2.arm64_golden_gate.bottle.tar.gz
-   gh release upload v0.3.2 aiu-0.3.2.arm64_golden_gate.bottle.tar.gz
+   cp aiu--0.3.3.arm64_golden_gate.bottle.tar.gz aiu-0.3.3.arm64_golden_gate.bottle.tar.gz
+   gh release upload v0.3.3 aiu-0.3.3.arm64_golden_gate.bottle.tar.gz
    ```
 4. **Publish the formula** in the tap repo. Its source URL and SHA-256 must match the
    tagged source tarball. Add the `bottle do` block from step 2, whose `root_url`
@@ -235,7 +235,7 @@ Releases ship through Homebrew, across two repositories: this one, and the tap a
    brew update && brew uninstall --force aiu && brew install getparable/tap/aiu
    make verify-release-signature APP="$(brew --prefix aiu)/AIU.app"
    ```
-   Expect `==> Pouring aiu-0.3.2.arm64_golden_gate.bottle.tar.gz` and a couple of seconds. If it
+   Expect `==> Pouring aiu-0.3.3.arm64_golden_gate.bottle.tar.gz` and a couple of seconds. If it
    compiles instead, the bottle name or the `root_url` is wrong.
 
 The bottle is built on the maintainer's machine, so it is tagged for that platform —
@@ -255,9 +255,9 @@ upgrades. Handing someone a `.zip` or `.dmg` directly also needs notarization:
    ```
 3. **Release**: set the bundle id to a domain you own, then
    ```sh
-   make release VERSION=0.3.2 BUNDLE_ID=com.example.aiu
+   make release VERSION=0.3.3 BUNDLE_ID=com.example.aiu
    ```
-   This runs the tests, builds a universal app, signs both binaries with the hardened runtime, notarizes, staples, and writes `dist/AIU-0.3.2.zip`. It refuses to start without both of the above.
+   This runs the tests, builds a universal app, signs both binaries with the hardened runtime, notarizes, staples, and writes `dist/AIU-0.3.3.zip`. It refuses to start without both of the above.
 
 ## Trademarks
 
