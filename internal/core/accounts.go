@@ -110,7 +110,62 @@ func (c *Config) CaptureClaudeCode(ctx context.Context, label string) (*SavedAcc
 	if live == nil {
 		return nil, errors.New("no Claude Code login found — sign in with `claude` first, or use `aiu login`")
 	}
-	working := &Record{
+	working := claudeRecordFromLive(live)
+	if working.IsExpired(c.now(), refreshMargin) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		// Once rotation starts, a cancelled frontend must wait for its replacement
+		// to be handed back and stored, just as it does for browser login.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+		defer cancel()
+		// This is Claude Code's own token: spend and hand it back under its
+		// refresh lock, so Claude Code cannot spend it too.
+		err := c.withClaudeRefreshLock(func() error {
+			// Claude Code may have refreshed while we waited for its lock; its
+			// current login is the one being added, and may need no refresh now.
+			current, err := c.readClaudeCode()
+			if err != nil {
+				return err
+			}
+			if current != nil && current.refreshToken() != working.RefreshToken {
+				working = claudeRecordFromLive(current)
+				if !working.IsExpired(c.now(), refreshMargin) {
+					return nil
+				}
+			}
+			spent := working.RefreshToken
+			fresh, err := c.refreshClaude(ctx, spent)
+			if err != nil {
+				return err
+			}
+			working.AccessToken, working.RefreshToken, working.ExpiresAt = fresh.AccessToken, fresh.RefreshToken, fresh.ExpiresAt
+			if fresh.RefreshTokenExpiresAt > 0 {
+				working.RefreshTokenExpiresAt = fresh.RefreshTokenExpiresAt
+			}
+			if fresh.Scopes != nil {
+				working.Scopes = fresh.Scopes
+			}
+			if _, err := c.handBackClaudeHeld(spent, working); err != nil {
+				return fmt.Errorf("refreshed Claude Code's token but could not save its replacement: %w", err)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	saved, err := c.persistAccount(ctx, working, label, "claude-code", true)
+	if err != nil {
+		return nil, err
+	}
+	return saved, nil
+}
+
+// claudeRecordFromLive is the unsaved record for the login Claude Code holds.
+func claudeRecordFromLive(live *LiveClaude) *Record {
+	r := &Record{
 		Provider:              Claude,
 		AccessToken:           live.accessToken(),
 		RefreshToken:          live.refreshToken(),
@@ -121,39 +176,10 @@ func (c *Config) CaptureClaudeCode(ctx context.Context, label string) (*SavedAcc
 	}
 	if scopes, ok := live.OAuth["scopes"].([]any); ok {
 		for _, s := range scopes {
-			working.Scopes = append(working.Scopes, str(s))
+			r.Scopes = append(r.Scopes, str(s))
 		}
 	}
-	if working.IsExpired(c.now(), refreshMargin) {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		// Once rotation starts, a cancelled frontend must wait for its replacement
-		// to be handed back and stored, just as it does for browser login.
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
-		defer cancel()
-		spent := working.RefreshToken
-		fresh, err := c.refreshClaude(ctx, working.RefreshToken)
-		if err != nil {
-			return nil, err
-		}
-		working.AccessToken, working.RefreshToken, working.ExpiresAt = fresh.AccessToken, fresh.RefreshToken, fresh.ExpiresAt
-		if fresh.RefreshTokenExpiresAt > 0 {
-			working.RefreshTokenExpiresAt = fresh.RefreshTokenExpiresAt
-		}
-		if fresh.Scopes != nil {
-			working.Scopes = fresh.Scopes
-		}
-		if _, err := c.handBackClaude(spent, working); err != nil {
-			return nil, fmt.Errorf("refreshed Claude Code's token but could not save its replacement: %w", err)
-		}
-	}
-	saved, err := c.persistAccount(ctx, working, label, "claude-code", true)
-	if err != nil {
-		return nil, err
-	}
-	return saved, nil
+	return r
 }
 
 // CaptureCodex adds the account Codex is signed in as.

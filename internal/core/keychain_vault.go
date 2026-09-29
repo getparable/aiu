@@ -129,19 +129,11 @@ func (c *Config) writeKeychainVault(vault *keychainVault) error {
 // Old items remain untouched at migration time. They can become stale after
 // token refreshes; once the vault exists, AIU reads only it.
 func (c *Config) migrateLegacyKeychain(vault *keychainVault) error {
-	var idx Index
-	if _, err := readJSONFile(c.indexFile(), &idx); err != nil {
-		return fmt.Errorf("cannot migrate AIU Keychain items: %w", err)
+	keys, err := c.pendingLegacyKeys(vault)
+	if err != nil {
+		return err
 	}
-	for _, entry := range idx.Accounts {
-		if entry == nil {
-			return fmt.Errorf("cannot migrate AIU Keychain items: account index contains an empty entry")
-		}
-		key := storeKey(entry.Provider, entry.Email, entry.Org)
-		// An existing vault record may have a newer rotated token than its backup.
-		if vault.record(key) != nil || vault.DeletedRecords[vault.canonicalKey(key)] {
-			continue
-		}
+	for _, key := range keys {
 		raw, ok, err := c.ownKeychainRead(key)
 		if err != nil {
 			return fmt.Errorf("cannot read old AIU Keychain item for %s: %w", key, err)
@@ -156,6 +148,29 @@ func (c *Config) migrateLegacyKeychain(vault *keychainVault) error {
 		vault.Records[key] = &record
 	}
 	return nil
+}
+
+// pendingLegacyKeys names the old per-account items migration still has to read
+// into vault: tracked accounts it holds no record for. The Keychain status check
+// probes this same set, so it predicts exactly the prompts migration can cause.
+func (c *Config) pendingLegacyKeys(vault *keychainVault) ([]string, error) {
+	var idx Index
+	if _, err := readJSONFile(c.indexFile(), &idx); err != nil {
+		return nil, fmt.Errorf("cannot migrate AIU Keychain items: %w", err)
+	}
+	var keys []string
+	for _, entry := range idx.Accounts {
+		if entry == nil {
+			return nil, fmt.Errorf("cannot migrate AIU Keychain items: account index contains an empty entry")
+		}
+		key := storeKey(entry.Provider, entry.Email, entry.Org)
+		// An existing vault record may have a newer rotated token than its backup.
+		if vault.record(key) != nil || vault.DeletedRecords[vault.canonicalKey(key)] {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	return keys, nil
 }
 
 // Called with keychainVaultLock held. Persisting the complete migration before
