@@ -65,9 +65,11 @@ func TestAcquireDirLockRespectsLiveAndStaleLocks(t *testing.T) {
 	if err := os.Chtimes(path, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := acquireDirLock(path, takeoverPath(t), time.Now().Add(time.Second)); err != nil {
+	lock, err := acquireDirLock(path, takeoverPath(t), time.Now().Add(time.Second))
+	if err != nil {
 		t.Fatalf("stale lock not taken over: %v", err)
 	}
+	t.Cleanup(lock.release)
 	if st, err := os.Stat(path); err != nil || time.Since(st.ModTime()) > time.Minute {
 		t.Fatalf("taken-over lock not refreshed: %v", err)
 	}
@@ -247,14 +249,21 @@ func TestAcquireDirLockStaleTakeoverIsExclusive(t *testing.T) {
 	}
 }
 
-// replaceDirLock plays Claude Code taking over a lock that went stale while its
-// holder was paused. Windows cannot remove a directory a process holds open,
-// which is that protection itself, so the scenario cannot arise there.
-func replaceDirLock(t *testing.T, path string) fs.FileInfo {
+// skipTakeoverOnWindows skips tests of a lock replaced under its holder. Windows
+// cannot remove a directory a process holds open, which is that protection
+// itself, so the scenario cannot arise there. It runs before any lock is taken:
+// a skip with a lock still open would fail TempDir cleanup on Windows.
+func skipTakeoverOnWindows(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows refuses to remove a lock directory its holder keeps open")
 	}
+}
+
+// replaceDirLock plays Claude Code taking over a lock that went stale while its
+// holder was paused.
+func replaceDirLock(t *testing.T, path string) fs.FileInfo {
+	t.Helper()
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
@@ -275,6 +284,7 @@ func replaceDirLock(t *testing.T, path string) fs.FileInfo {
 // After a pause long enough for Claude Code to take a lock over, AIU's heartbeat
 // and release must leave Claude Code's replacement lock untouched.
 func TestHeldDirLockLeavesAReplacementAlone(t *testing.T) {
+	skipTakeoverOnWindows(t)
 	path := filepath.Join(t.TempDir(), ".oauth_refresh.lock")
 	lock, err := acquireDirLock(path, takeoverPath(t), time.Now().Add(time.Second))
 	if err != nil {
@@ -314,6 +324,7 @@ func TestHeldDirLockLeavesAReplacementAlone(t *testing.T) {
 // Releasing withClaudeRefreshLock after a takeover mid-callback must not delete
 // the lock Claude Code now holds.
 func TestWithClaudeRefreshLockSparesATakeoverOnRelease(t *testing.T) {
+	skipTakeoverOnWindows(t)
 	dir := filepath.Join(t.TempDir(), ".claude")
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -334,6 +345,7 @@ func TestWithClaudeRefreshLockSparesATakeoverOnRelease(t *testing.T) {
 // A takeover landing between touch's ownership check and its stamp must not make
 // AIU adopt Claude Code's replacement, or release would delete it.
 func TestHeldDirLockTouchNeverAdoptsAReplacement(t *testing.T) {
+	skipTakeoverOnWindows(t)
 	path := filepath.Join(t.TempDir(), ".oauth_refresh.lock")
 	lock, err := acquireDirLock(path, takeoverPath(t), time.Now().Add(time.Second))
 	if err != nil {
