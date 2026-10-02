@@ -44,6 +44,17 @@ struct ContractTest {
             precondition(outcome.cancelled == (name == "cancelled"))
             precondition(outcome.error != nil)
         }
+        let switchWarning = try AIUJSON.decoder().decode(SwitchOutcome.self,
+            from: Data(contentsOf: directory.appendingPathComponent("switch-warning.json")))
+        precondition(!switchWarning.alreadyActive)
+        precondition(switchWarning.codexDaemon?.status == "unavailable")
+        precondition(switchWarning.codexDaemon?.warning == true)
+        precondition(switchWarning.codexDaemon?.message.contains("saved login") == true)
+        let switchUnchanged = try AIUJSON.decoder().decode(SwitchOutcome.self,
+            from: Data(contentsOf: directory.appendingPathComponent("switch-unchanged.json")))
+        precondition(switchUnchanged.alreadyActive)
+        precondition(switchUnchanged.codexDaemon?.status == "unchanged")
+        precondition(switchUnchanged.codexDaemon?.warning == false)
         // Existing accounts and fractional RFC3339 timestamps still decode.
         let raw = try String(contentsOf: directory.appendingPathComponent("accounts.json"), encoding: .utf8)
             .replacingOccurrences(of: "2030-01-01T00:00:00Z", with: "2030-01-01T00:00:00.123Z")

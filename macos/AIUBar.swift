@@ -302,19 +302,36 @@ final class Store {
 
     func switchTo(_ account: Account) async {
         let switchMessage = account.kind == .codex
-            ? "\(account.email)\n\nStart a new Codex session to use this account."
+            ? "\(account.email)\n\nIf the account changes, AIU restarts a running Codex daemon. All connected terminals reconnect, and current turns are interrupted. Standalone sessions still need to exit and resume with codex resume --last --no-daemon (omit the flag on older versions)."
             : "\(account.email)\n\nClaude Code will use this account when it next reads its credentials."
         guard confirm(
             title: "Switch \(account.kind.client) to \(account.label)?",
             message: switchMessage,
             action: "Switch"
         ) else { return }
-        let result = await CLI.run(["switch", account.id])
+        let result = await CLI.run(["switch", account.id, "--json"])
         if result.status == 0 {
-            flash(account.kind == .codex
-                ? "New Codex sessions will use \(account.label)"
-                : "Claude Code now uses \(account.label)")
+            let outcome: SwitchOutcome
+            do {
+                outcome = try AIUJSON.decoder().decode(SwitchOutcome.self, from: result.stdout)
+            } catch {
+                await refresh()
+                lastError = "Login saved, but the switch result could not be read: \(error.localizedDescription)"
+                return
+            }
             await refresh()
+            if let daemon = outcome.codexDaemon {
+                if daemon.status == "restarted" {
+                    flash("Codex switched to \(account.label). Terminals reconnecting.")
+                } else if outcome.alreadyActive {
+                    flash("Codex login already saved for \(account.label). Daemon unchanged.")
+                } else {
+                    flash("Codex login saved for \(account.label). Restart standalone sessions to use it.")
+                }
+                if daemon.warning { lastError = daemon.message }
+            } else {
+                flash("Claude Code now uses \(account.label)")
+            }
         } else {
             lastError = result.message
         }
