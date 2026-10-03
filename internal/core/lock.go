@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -15,6 +16,13 @@ func withFileLock(path string, fn func() error) error {
 }
 
 func withFileLockTimeout(path string, wait time.Duration, fn func() error) error {
+	return withFileLockContext(context.Background(), path, wait, fn)
+}
+
+func withFileLockContext(ctx context.Context, path string, wait time.Duration, fn func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -23,19 +31,29 @@ func withFileLockTimeout(path string, wait time.Duration, fn func() error) error
 		return err
 	}
 	defer f.Close()
-	deadline := time.Now().Add(wait)
+	waitCtx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if waitCtx.Err() != nil {
+			return errLockTimeout
+		}
 		err = tryPlatformLock(f)
 		if err == nil {
 			defer unlockPlatformLock(f)
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			return fn()
 		}
 		if !isLockContended(err) {
 			return err
 		}
-		if time.Now().After(deadline) {
-			return errLockTimeout
+		select {
+		case <-waitCtx.Done():
+		case <-time.After(25 * time.Millisecond):
 		}
-		time.Sleep(25 * time.Millisecond)
 	}
 }

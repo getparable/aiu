@@ -80,9 +80,12 @@ func TestCodexSwitchDaemonOutcomes(t *testing.T) {
 	}{
 		{"running", `echo '{"status":"running"}'`, "exit 0", "restarted", "Connected terminals will reconnect", false, false},
 		{"stopped", `echo '{"status":"stopped"}'`, "exit 99", "not_running", "only the saved login changed", false, false},
-		{"older CLI or stopped", "exit 2", "exit 99", "not_running", "No running compatible Codex daemon", false, false},
+		{"probe failure", "echo 'permission denied: synthetic-secret' >&2; exit 2", "exit 99", "unavailable", "status could not be checked", true, false},
+		{"older CLI", `echo "error: unrecognized subcommand 'daemon'" >&2; exit 2`, "exit 99", "unsupported", "no daemon management", false, false},
+		{"absent daemon socket", `echo "Error: failed to connect to $CODEX_HOME/app-server-control/app-server-control.sock" >&2; echo 'No such file or directory (os error 2)' >&2; exit 1`, "exit 99", "not_running", "not running", false, false},
 		{"restart failed", `echo '{"status":"running"}'`, "exit 9", "restart_failed", "restart failed", true, false},
 		{"invalid status", `echo 'not JSON'`, "exit 99", "unavailable", "unrecognized daemon status", true, false},
+		{"unknown status", `echo '{"status":"error"}'`, "exit 99", "unavailable", "unrecognized daemon status", true, false},
 		{"probe cancelled", "exec sleep 30", "exit 99", "unavailable", "status could not be checked", true, true},
 		{"restart cancelled", `echo '{"status":"running"}'`, "exec sleep 30", "restart_failed", "restart failed", true, true},
 	} {
@@ -121,6 +124,9 @@ func TestCodexSwitchDaemonOutcomes(t *testing.T) {
 				}
 				if tt.warning != strings.Contains(stderr.String(), "warn:") {
 					t.Fatalf("warning output = %q", stderr.String())
+				}
+				if strings.Contains(stdout.String()+stderr.String(), "synthetic-secret") {
+					t.Fatal("probe diagnostic exposed command output")
 				}
 				if live := cfg.ReadCodexAuth(); live == nil || live.LiveEmail() != "fixture@example.test" {
 					t.Fatal("daemon outcome lost the saved credentials")

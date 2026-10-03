@@ -426,7 +426,7 @@ func (c *Config) SwitchAccount(ctx context.Context, target string, provider Prov
 	if e.Provider == Codex {
 		// Serialize saving credentials and restarting across CLI/app switches.
 		// writeCodexAuth holds its separate auth lock only during the file write.
-		err := withFileLock(filepath.Join(c.CodexHome, ".aiu-switch.lock"), func() error {
+		err := withFileLockContext(ctx, filepath.Join(c.CodexHome, ".aiu-switch.lock"), codexSwitchLockWait, func() error {
 			live, m, synced := c.SyncCodex(records, true)
 			rec := find(synced, e)
 			if rec == nil {
