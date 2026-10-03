@@ -92,6 +92,7 @@ func testConfig(t *testing.T, api *fakeAPI) *Config {
 		ClaudeService:      "aiu-test-nonexistent-service",
 		ClaudeGlobalConfig: filepath.Join(dir, "claude.json"),
 		CodexHome:          filepath.Join(dir, "codex"),
+		CodexBinary:        filepath.Join(dir, "no-codex-installed"),
 		ClaudeUsageURL:     api.server.URL + "/claude/usage",
 		ClaudeProfileURL:   api.server.URL + "/claude/profile",
 		ClaudeTokenURLs:    []string{api.server.URL + "/claude/token"},
@@ -466,9 +467,30 @@ func TestAutoLabelForPersonalOrganization(t *testing.T) {
 }
 
 func TestCodexCaptureAndSwitch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake Codex executable uses a POSIX shell")
+	}
 	api := newFakeAPI(t)
 	c := testConfig(t, api)
 	ctx := context.Background()
+	bin := t.TempDir()
+	script := `#!/bin/sh
+case "$*" in
+  'app-server daemon version') echo '{"status":"running"}' ;;
+  'app-server daemon restart')
+    case "$(cat "$CODEX_HOME/auth.json")" in
+      *x@example.com*) echo restarted >> "$CODEX_HOME/restarts" ;;
+      *) exit 9 ;;
+    esac ;;
+  *) exit 8 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	c.CodexBinary = filepath.Join(bin, "codex")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CODEX_HOME", filepath.Join(t.TempDir(), "wrong-home"))
 	exp := float64(c.now().Add(24 * time.Hour).Unix())
 	writeAuth := func(email, access, refresh string) {
 		idToken := fakeJWT(map[string]any{"email": email, "https://api.openai.com/auth": map[string]any{"chatgpt_plan_type": "pro", "chatgpt_account_id": "acct-" + email}})
@@ -501,6 +523,16 @@ func TestCodexCaptureAndSwitch(t *testing.T) {
 	live := c.ReadCodexAuth()
 	if live.LiveEmail() != "x@example.com" || live.refreshToken() != "rx" || live.Doc["extra"] != "kept" {
 		t.Fatalf("auth.json after switch = %+v", live.Doc)
+	}
+	restarts := filepath.Join(c.CodexHome, "restarts")
+	if data, err := os.ReadFile(restarts); err != nil || string(data) != "restarted\n" {
+		t.Fatalf("running daemon was not restarted after saving selected credentials: %q, %v", data, err)
+	}
+	if res, err := c.SwitchAccount(ctx, "codex:x", ""); err != nil || !res.AlreadyActive {
+		t.Fatalf("repeat switch: %+v %v", res, err)
+	}
+	if data, err := os.ReadFile(restarts); err != nil || string(data) != "restarted\n" {
+		t.Fatalf("selecting the same account restarted the daemon again: %q, %v", data, err)
 	}
 }
 

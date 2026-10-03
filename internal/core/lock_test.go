@@ -52,6 +52,29 @@ func TestLockSubprocessContention(t *testing.T) {
 	if elapsed := time.Since(begin); !errors.Is(err, errLockTimeout) || elapsed > 5*time.Second {
 		t.Fatalf("bounded wait: %v after %v", err, elapsed)
 	}
+	// A slow switch can hold this lock much longer than an ordinary file write.
+	// Cancellation must release the waiting caller without entering its mutation.
+	waitCtx, stopWaiting := context.WithCancel(ctx)
+	waiting := make(chan error, 1)
+	go func() {
+		waiting <- withFileLockContext(waitCtx, path, codexSwitchLockWait, func() error {
+			return errors.New("entered locked critical section")
+		})
+	}()
+	select {
+	case err := <-waiting:
+		t.Fatalf("lock waiter returned before cancellation: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	stopWaiting()
+	select {
+	case err := <-waiting:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled lock waiter: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("lock waiter ignored cancellation")
+	}
 	stdin.Close()
 	if err := cmd.Wait(); err != nil {
 		t.Fatal(err)

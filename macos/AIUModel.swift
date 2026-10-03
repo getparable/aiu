@@ -1,6 +1,17 @@
 // Shared by the SwiftUI app and its Go JSON contract test.
 import Foundation
 
+// Mirrors `aiu switch --json`; credentials are never included in this result.
+struct SwitchOutcome: Decodable {
+    struct CodexDaemon: Decodable {
+        let status: String
+        let message: String
+        let warning: Bool
+    }
+    let alreadyActive: Bool
+    let codexDaemon: CodexDaemon?
+}
+
 // Additive command outcomes for external frontend compatibility checks. The
 // existing SwiftUI process bridge still uses the original CLI exit status.
 struct FrontendOutcome: Decodable {

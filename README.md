@@ -4,7 +4,7 @@ Rate limits and reset times for several **Claude** (Pro/Max) and **ChatGPT/Codex
 
 - Live 5-hour and weekly windows per account, straight from the endpoints `/usage` and `/status` use.
 - Keeps its own copy of each account's login, so signing Claude Code or Codex into another account never loses one.
-- `aiu switch` points Claude Code or Codex at any tracked account; running Claude Code sessions follow within about 30 seconds.
+- `aiu switch` points Claude Code or Codex's saved login at any tracked account. Running Claude Code sessions follow within about 30 seconds. AIU restarts a running Codex daemon so connected terminals can reconnect with the selected account.
 
 > **Unofficial, and read this before signing in with a Claude subscription.** AIU is not affiliated with, endorsed by, or supported by Anthropic or OpenAI. It uses internal, undocumented endpoints and the same OAuth clients as Claude Code and the Codex CLI; either company can change or block that at any time.
 >
@@ -73,6 +73,32 @@ aiu --json                     # for scripts and status bars
 ```
 
 For a second account, sign in from a private browser window so the sign-in page does not reuse the account your browser is already logged in to.
+
+Switch with `aiu switch codex:alt` or the Mac app. After saving the selected login,
+AIU checks `codex app-server daemon version` and restarts a running daemon with
+`codex app-server daemon restart`. All terminals attached to that daemon reconnect
+and restore their conversations; current turns are interrupted. Selecting the
+already saved account does not restart it. AIU does not start a stopped daemon or
+terminate standalone Codex processes.
+
+Standalone sessions (`--no-daemon`) and older Codex versions still need a manual
+restart. Exit with `/exit`, then run this from the same project directory:
+
+```sh
+codex resume --last --no-daemon
+```
+
+`--no-daemon` starts a fresh process that reads the selected login instead of
+reusing a shared Codex daemon's cached account. If your Codex version does not
+support that flag, use `codex resume --last`. Use `codex resume <SESSION_ID>` in
+place of `--last` to choose a specific conversation. If the daemon restart fails,
+AIU keeps the saved login and reports a warning with the manual restart command.
+
+AIU discovers `codex` on PATH, then checks `~/.local/bin`, `/opt/homebrew/bin`, and
+`/usr/local/bin` for apps launched from Finder. For another installation location,
+set `AIU_CODEX_BIN` to the executable path. Daemon commands use the same
+`CODEX_HOME` as the switched credentials. `aiu switch --json` reports the saved
+account and daemon outcome without including credentials.
 
 ## Banked Codex resets
 
@@ -187,7 +213,7 @@ Releases ship through Homebrew, across two repositories: this one, and the tap a
    `main` with nothing uncommitted:
    ```sh
    make tag
-   gh release create v0.3.3 --title "aiu 0.3.3" --latest --notes-file docs/releases/v0.3.3.md
+   gh release create v0.3.4 --title "aiu 0.3.4" --latest --notes-file docs/releases/v0.3.4.md
    ```
    `make tag` derives the tag from `VERSION`, so the two cannot disagree — which they have,
    twice: the binary then reports the wrong version and `aiu update` either nags about an
@@ -196,7 +222,7 @@ Releases ship through Homebrew, across two repositories: this one, and the tap a
    CI checks the same thing on every pushed tag, in case one is made by hand.
 2. **Build the bottle.** Install a Developer ID Application certificate on the build
    machine first. In the local tap checkout, change the formula's source URL and
-   source tarball SHA-256 to v0.3.3 and remove its old `bottle do` block. Keep this
+   source tarball SHA-256 to v0.3.4 and remove its old `bottle do` block. Keep this
    formula edit local until the new bottle is uploaded. Otherwise Homebrew builds the
    old version again. Homebrew's build sandbox can hide the signing identity from
    `make app`, so sign the installed app outside that sandbox before bottling it.
@@ -216,7 +242,7 @@ Releases ship through Homebrew, across two repositories: this one, and the tap a
    codesign --force --timestamp --sign "$AIU_SIGN_ID" "$AIU_BOTTLE_APP"
    make verify-release-signature APP="$AIU_BOTTLE_APP"
    brew bottle --json --no-rebuild \
-     --root-url="https://github.com/getparable/aiu/releases/download/v0.3.3" \
+     --root-url="https://github.com/getparable/aiu/releases/download/v0.3.4" \
      getparable/tap/aiu
    ```
    Keep the `bottle do` block it prints — step 4 needs it.
@@ -224,8 +250,8 @@ Releases ship through Homebrew, across two repositories: this one, and the tap a
    URL has *one*; the `.json` manifest spells out both as `local_filename` and `filename`.
    Upload the wrong one and every install quietly compiles instead.
    ```sh
-   cp aiu--0.3.3.arm64_golden_gate.bottle.tar.gz aiu-0.3.3.arm64_golden_gate.bottle.tar.gz
-   gh release upload v0.3.3 aiu-0.3.3.arm64_golden_gate.bottle.tar.gz
+   cp aiu--0.3.4.arm64_golden_gate.bottle.tar.gz aiu-0.3.4.arm64_golden_gate.bottle.tar.gz
+   gh release upload v0.3.4 aiu-0.3.4.arm64_golden_gate.bottle.tar.gz
    ```
 4. **Publish the formula** in the tap repo. Its source URL and SHA-256 must match the
    tagged source tarball. Add the `bottle do` block from step 2, whose `root_url`
@@ -235,7 +261,7 @@ Releases ship through Homebrew, across two repositories: this one, and the tap a
    brew update && brew uninstall --force aiu && brew install getparable/tap/aiu
    make verify-release-signature APP="$(brew --prefix aiu)/AIU.app"
    ```
-   Expect `==> Pouring aiu-0.3.3.arm64_golden_gate.bottle.tar.gz` and a couple of seconds. If it
+   Expect `==> Pouring aiu-0.3.4.arm64_golden_gate.bottle.tar.gz` and a couple of seconds. If it
    compiles instead, the bottle name or the `root_url` is wrong.
 
 The bottle is built on the maintainer's machine, so it is tagged for that platform —
@@ -255,9 +281,9 @@ upgrades. Handing someone a `.zip` or `.dmg` directly also needs notarization:
    ```
 3. **Release**: set the bundle id to a domain you own, then
    ```sh
-   make release VERSION=0.3.3 BUNDLE_ID=com.example.aiu
+   make release VERSION=0.3.4 BUNDLE_ID=com.example.aiu
    ```
-   This runs the tests, builds a universal app, signs both binaries with the hardened runtime, notarizes, staples, and writes `dist/AIU-0.3.3.zip`. It refuses to start without both of the above.
+   This runs the tests, builds a universal app, signs both binaries with the hardened runtime, notarizes, staples, and writes `dist/AIU-0.3.4.zip`. It refuses to start without both of the above.
 
 ## Trademarks
 

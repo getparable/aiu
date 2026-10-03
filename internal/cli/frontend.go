@@ -209,8 +209,14 @@ func frontendCommand(ctx context.Context, cfg *core.Config, opts *options, comma
 		if selector == "" {
 			return "", errors.New("frontend switch needs an account selector")
 		}
-		_, err := cfg.SwitchAccount(ctx, selector, opts.provider)
-		return "account switched", err
+		result, err := cfg.SwitchAccount(ctx, selector, opts.provider)
+		if err != nil {
+			return "", err
+		}
+		if result.CodexDaemon != nil {
+			return "account switched; " + result.CodexDaemon.Message, nil
+		}
+		return "account switched", nil
 	case "remove":
 		if selector == "" {
 			return "", errors.New("frontend remove needs an account selector")

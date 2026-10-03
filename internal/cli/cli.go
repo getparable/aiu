@@ -547,13 +547,25 @@ func (a *app) switchTo(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	client := res.Entry.Provider.Client()
-	if res.AlreadyActive {
-		fmt.Fprintf(a.stdout, "%s %s already uses %s\n", a.p.green("✔"), client, res.Entry.Email)
-		return nil
-	}
 	if res.UntrackedReplaced != "" {
 		fmt.Fprintln(a.stderr, a.p.yellow("warn: the previous login ("+res.UntrackedReplaced+") was not tracked; it has been replaced. Run `aiu add` before switching next time to keep it."))
+	}
+	if res.CodexDaemon != nil && res.CodexDaemon.Warning {
+		fmt.Fprintln(a.stderr, a.p.yellow("warn: "+res.CodexDaemon.Message))
+	}
+	if a.opts.json {
+		return json.NewEncoder(a.stdout).Encode(res)
+	}
+	client := res.Entry.Provider.Client()
+	if res.Entry.Provider == core.Codex {
+		client += " saved login"
+	}
+	if res.AlreadyActive {
+		fmt.Fprintf(a.stdout, "%s %s already uses %s\n", a.p.green("✔"), client, res.Entry.Email)
+		if res.Entry.Provider == core.Codex {
+			a.codexSwitchGuidance(res)
+		}
+		return nil
 	}
 	note := ""
 	if !res.UpdatedGlobal {
@@ -563,9 +575,15 @@ func (a *app) switchTo(ctx context.Context) error {
 	if res.Entry.Provider == core.Claude {
 		fmt.Fprintln(a.stdout, a.p.dim("   running claude sessions pick it up within about 30s; new sessions use it immediately"))
 	} else {
-		fmt.Fprintln(a.stdout, a.p.dim("   start a new codex session to pick it up"))
+		a.codexSwitchGuidance(res)
 	}
 	return nil
+}
+
+func (a *app) codexSwitchGuidance(res *core.SwitchResult) {
+	if res.CodexDaemon != nil && !res.CodexDaemon.Warning {
+		fmt.Fprintln(a.stdout, a.p.dim("   "+res.CodexDaemon.Message))
+	}
 }
 
 // menuBar opens the installed AIU.app, which draws the panel and calls this binary.

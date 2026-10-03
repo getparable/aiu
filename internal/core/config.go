@@ -117,6 +117,7 @@ type Config struct {
 	ClaudeService      string // Claude Code's keychain service
 	ClaudeGlobalConfig string // .claude.json with the cached oauthAccount block
 	CodexHome          string
+	CodexBinary        string // optional executable override; otherwise discover Codex
 
 	ClaudeUsageURL            string
 	ClaudeProfileURL          string
@@ -145,7 +146,8 @@ func DefaultConfig() *Config {
 		UseDPAPI:     runtime.GOOS == "windows" && os.Getenv("AIU_STORE") != "file",
 		StoreService: "aiu",
 
-		CodexHome: envOr("CODEX_HOME", filepath.Join(home, ".codex")),
+		CodexHome:   envOr("CODEX_HOME", filepath.Join(home, ".codex")),
+		CodexBinary: os.Getenv("AIU_CODEX_BIN"),
 
 		ClaudeUsageURL:            "https://api.anthropic.com/api/oauth/usage",
 		ClaudeProfileURL:          "https://api.anthropic.com/api/oauth/profile",

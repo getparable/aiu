@@ -1,0 +1,15 @@
+{
+  "entry": {
+    "email": "fixture@example.test",
+    "label": "work",
+    "org": "fixture-account",
+    "provider": "codex"
+  },
+  "alreadyActive": false,
+  "updatedGlobal": true,
+  "codexDaemon": {
+    "status": "unavailable",
+    "message": "Codex executable unavailable; only the saved login changed. Set AIU_CODEX_BIN to its path to enable daemon restarts. For standalone sessions, exit Codex and run `codex resume --last --no-daemon` (omit --no-daemon on older versions).",
+    "warning": true
+  }
+}

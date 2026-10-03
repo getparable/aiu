@@ -47,6 +47,13 @@ unknown percentage from zero. The frontend displays Go's `recommended`, `why`,
 Go-produced fixtures in `tests/fixtures/frontend` are decoded by the Swift model
 and copied into the Rust repository's contract tests.
 
+Codex switches save the selected credentials and restart a running shared daemon.
+Attached terminals reconnect; current turns are interrupted. A daemon restart
+failure leaves the login saved, so the terminal result remains `ok: true` and its
+`message` includes the warning and manual restart command. Frontends should display
+that message. Selecting the already saved account does not restart the daemon.
+Standalone Codex sessions still need a manual exit and resume.
+
 Codex rows add an optional `bankedResets` object: `availableCount` is nullable,
 `credits` is nullable when details have not been fetched, and `canRedeem` is Go's
 decision. Each credit contains `id`, `resetType`, `status`, `grantedAt`, `expiresAt`,

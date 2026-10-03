@@ -1,0 +1,15 @@
+{
+  "entry": {
+    "email": "fixture@example.test",
+    "label": "work",
+    "org": "fixture-account",
+    "provider": "codex"
+  },
+  "alreadyActive": true,
+  "updatedGlobal": false,
+  "codexDaemon": {
+    "status": "unchanged",
+    "message": "Saved login unchanged; Codex daemon was not restarted. If a connected session still uses another account, run `codex app-server daemon restart`. For standalone sessions, exit Codex and run `codex resume --last --no-daemon` (omit --no-daemon on older versions).",
+    "warning": false
+  }
+}

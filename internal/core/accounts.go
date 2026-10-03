@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -383,14 +384,17 @@ func (c *Config) DescribeLive(ctx context.Context, verify bool) (map[Provider]*L
 
 // SwitchResult reports what SwitchAccount did.
 type SwitchResult struct {
-	Entry             *IndexEntry
-	AlreadyActive     bool
-	UntrackedReplaced string // the previous login, when no tracked record held it
-	UpdatedGlobal     bool   // .claude.json's account block was rewritten
+	Entry             *IndexEntry        `json:"entry"`
+	AlreadyActive     bool               `json:"alreadyActive"`
+	UntrackedReplaced string             `json:"untrackedReplaced,omitempty"` // previous untracked login
+	UpdatedGlobal     bool               `json:"updatedGlobal"`               // provider credentials/cache updated
+	CodexDaemon       *CodexDaemonResult `json:"codexDaemon,omitempty"`
 }
 
-// SwitchAccount points Claude Code or Codex at a tracked account. Running sessions
-// pick it up the next time they re-read their credentials.
+// SwitchAccount points Claude Code or Codex's saved login at a tracked account.
+// Running Claude Code sessions re-read credentials; Codex processes retain their
+// current account. A running shared Codex daemon is restarted after a change;
+// standalone sessions must be restarted by the user.
 func (c *Config) SwitchAccount(ctx context.Context, target string, provider Provider) (*SwitchResult, error) {
 	idx, e, err := c.FindAccount(target, provider)
 	if err != nil {
@@ -420,25 +424,35 @@ func (c *Config) SwitchAccount(ctx context.Context, target string, provider Prov
 	res := &SwitchResult{Entry: e}
 
 	if e.Provider == Codex {
-		live, m, synced := c.SyncCodex(records, true)
-		rec := find(synced, e)
-		if rec == nil {
-			return nil, fmt.Errorf("token for %s not found — sign in again for it", e.Describe())
-		}
-		if live != nil && m.Is(rec) && live.refreshToken() == rec.RefreshToken {
-			res.AlreadyActive = true
-			return res, nil
-		}
-		if live != nil && !tracked(synced, m, Codex) {
-			res.UntrackedReplaced = firstNonEmpty(m.Email, "an unidentified account")
-		}
-		if rec, err = c.ensureFresh(ctx, rec, nil, nil, false); err != nil {
+		// Serialize saving credentials and restarting across CLI/app switches.
+		// writeCodexAuth holds its separate auth lock only during the file write.
+		err := withFileLockContext(ctx, filepath.Join(c.CodexHome, ".aiu-switch.lock"), codexSwitchLockWait, func() error {
+			live, m, synced := c.SyncCodex(records, true)
+			rec := find(synced, e)
+			if rec == nil {
+				return fmt.Errorf("token for %s not found — sign in again for it", e.Describe())
+			}
+			if live != nil && m.Is(rec) && live.refreshToken() == rec.RefreshToken {
+				res.AlreadyActive = true
+				res.CodexDaemon = codexDaemonUnchanged()
+				return nil
+			}
+			if live != nil && !tracked(synced, m, Codex) {
+				res.UntrackedReplaced = firstNonEmpty(m.Email, "an unidentified account")
+			}
+			if rec, err = c.ensureFresh(ctx, rec, nil, nil, false); err != nil {
+				return err
+			}
+			if _, err := c.writeCodexAuth(live, rec); err != nil {
+				return err
+			}
+			res.UpdatedGlobal = true
+			res.CodexDaemon = c.restartCodexDaemon(ctx)
+			return nil
+		})
+		if err != nil {
 			return nil, err
 		}
-		if _, err := c.writeCodexAuth(live, rec); err != nil {
-			return nil, err
-		}
-		res.UpdatedGlobal = true
 		return res, nil
 	}
 
