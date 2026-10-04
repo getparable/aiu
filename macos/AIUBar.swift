@@ -114,6 +114,8 @@ final class Store {
     var loading = false
     var resetBusyAccounts: Set<String> = []
     var notice: String?
+    // A Codex switch can wait for the daemon to stop running turns.
+    var switching = false
     var barImage: NSImage = Store.placeholderImage()
 
     // Sign-in in progress
@@ -302,14 +304,20 @@ final class Store {
 
     func switchTo(_ account: Account) async {
         let switchMessage = account.kind == .codex
-            ? "\(account.email)\n\nIf the account changes, AIU restarts a running Codex daemon. All connected terminals reconnect, and current turns are interrupted. Standalone sessions still need to exit and resume with codex resume --last --no-daemon (omit the flag on older versions)."
+            ? "\(account.email)\n\nIf the account changes, AIU restarts a running Codex daemon. All connected terminals reconnect, and current turns are interrupted. If turns are still running, this can take a minute. Standalone sessions still need to exit and resume with codex resume --last --no-daemon (omit the flag on older versions)."
             : "\(account.email)\n\nClaude Code will use this account when it next reads its credentials."
-        guard confirm(
+        guard !switching, confirm(
             title: "Switch \(account.kind.client) to \(account.label)?",
             message: switchMessage,
             action: "Switch"
         ) else { return }
+        switching = true
+        defer { switching = false }
+        if account.kind == .codex {
+            notice = "Switching Codex to \(account.label)… restarting the Codex daemon."
+        }
         let result = await CLI.run(["switch", account.id, "--json"])
+        if notice?.hasPrefix("Switching Codex") == true { notice = nil }
         if result.status == 0 {
             let outcome: SwitchOutcome
             do {
@@ -681,6 +689,7 @@ struct AccountBody: View {
         Menu {
             if account.canSwitch && !account.active {
                 Button("Switch \(account.kind.client) to This Account") { Task { await store.switchTo(account) } }
+                    .disabled(store.switching)
             }
             if account.needsLogin || account.login.state == "expiring" {
                 Button("Sign In Again…") { store.beginLogin(account.kind, label: account.label) }
@@ -940,7 +949,7 @@ struct SummaryCard: View {
                     } label: {
                         Label(menuTitle(account), systemImage: menuSymbol(account))
                     }
-                    .disabled(account.active || !account.canSwitch)
+                    .disabled(account.active || !account.canSwitch || store.switching)
                 }
             }
         } label: {
@@ -1006,6 +1015,7 @@ struct SummaryCard: View {
                 Button("Switch") {
                     Task { await store.switchTo(best) }
                 }
+                .disabled(store.switching)
                 .buttonStyle(.glass)
                 .controlSize(.small)
                 .font(.caption.weight(.semibold))

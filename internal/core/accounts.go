@@ -438,7 +438,7 @@ func (c *Config) SwitchAccount(ctx context.Context, target string, provider Prov
 				if c.codexRestartPending() {
 					// An earlier switch saved this login but its restart never
 					// finished; the daemon may still be draining.
-					res.CodexDaemon = c.restartCodexDaemon(ctx)
+					res.CodexDaemon = c.retryCodexRestart(ctx)
 				}
 				return nil
 			}

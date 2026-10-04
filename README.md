@@ -77,12 +77,15 @@ For a second account, sign in from a private browser window so the sign-in page 
 Switch with `aiu switch codex:alt` or the Mac app. After saving the selected login,
 AIU checks `codex app-server daemon version` and restarts a running daemon with
 `codex app-server daemon restart`. All terminals attached to that daemon reconnect
-and restore their conversations; current turns are interrupted. If active turns
-keep the daemon from stopping within about 10 seconds, AIU restarts it a second
-time, which makes Codex force-stop the draining daemon and start a replacement.
+and reload their saved conversations; turns that were running are interrupted and
+their unfinished work is lost. If active turns keep the daemon from stopping within
+about 10 seconds, AIU restarts it a second time, which makes Codex stop those turns
+and start a replacement.
 AIU confirms that a new daemon process replaced the old one. Selecting the already
 saved account does not restart it, unless an earlier switch's restart did not
-complete. AIU does not start a stopped daemon or terminate standalone Codex
+complete and the same daemon is still running. A restart that has started keeps
+running if you press Ctrl-C, because stopping it midway leaves Codex refusing new
+sessions; press Ctrl-C again to exit aiu while the restart completes. AIU does not start a stopped daemon or terminate standalone Codex
 processes. The Codex desktop app and `codex exec` run their own app servers and
 keep the previous account until they restart.
 

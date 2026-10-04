@@ -178,6 +178,44 @@ esac
 	}
 }
 
+func TestCodexSwitchInterruptExplainsRestartContinues(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake Codex executable uses a POSIX shell")
+	}
+	cfg := codexSwitchConfig(t)
+	cfg.CodexRestartWait = 5 * time.Second
+	cfg.CodexBinary = filepath.Join(cfg.Dir, "fake-codex")
+	script := `#!/bin/sh
+case "$*" in
+'app-server daemon version') echo '{"status":"running"}' ;;
+'app-server daemon restart') touch "$CODEX_HOME/restarting"; sleep 0.4; echo '{"status":"restarted","pid":202}' ;;
+*) exit 99 ;;
+esac
+`
+	if err := os.WriteFile(cfg.CodexBinary, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		for {
+			if _, err := os.Stat(filepath.Join(cfg.CodexHome, "restarting")); err == nil {
+				cancel()
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	var stdout, stderr bytes.Buffer
+	a := &app{cfg: cfg, opts: &options{args: []string{"codex:work"}}, stdout: &stdout, stderr: &stderr}
+	if err := a.switchTo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr.String(), "Ctrl-C again") || !strings.Contains(stdout.String(), "Connected terminals will reconnect") {
+		t.Fatalf("interrupted switch output:\n%s\n%s", stdout.String(), stderr.String())
+	}
+}
+
 func TestCodexFailedCredentialWriteDoesNotTouchDaemon(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake Codex executable uses a POSIX shell")

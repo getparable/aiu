@@ -152,6 +152,54 @@ func TestCodexRestartPendingSurvivesUnfinishedProbe(t *testing.T) {
 	}
 }
 
+func TestCodexDaemonRestartReportsProgress(t *testing.T) {
+	c := fakeDaemonConfig(t, "exec sleep 30", replaced("202"))
+	var info []string
+	c.Info = func(m string) { info = append(info, m) }
+	c.restartCodexDaemon(context.Background())
+	got := strings.Join(info, "\n")
+	for _, want := range []string{"Restarting the Codex daemon", "still finishing turns"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("progress missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestCodexRestartRetrySkipsReplacedDaemon(t *testing.T) {
+	c := fakeDaemonConfig(t, "exec sleep 30")
+	if res := c.restartCodexDaemon(context.Background()); res.Status != "restart_failed" {
+		t.Fatalf("first result = %+v", res)
+	}
+	// The user restarted Codex by hand: a different daemon now holds the PID
+	// record, so it started after the saved login and needs no restart.
+	pidFile := filepath.Join(c.CodexHome, "app-server-daemon", "app-server.pid")
+	if err := os.WriteFile(pidFile, []byte(`{"pid":909,"processStartTime":"later"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if res := c.retryCodexRestart(context.Background()); res.Status != "restarted" || res.Warning {
+		t.Fatalf("retry result = %+v", res)
+	}
+	if got := restartCount(t, c); got != "2" {
+		t.Fatalf("replaced daemon was restarted again: %s attempts", got)
+	}
+	if c.codexRestartPending() {
+		t.Fatal("pending marker kept after a replacement daemon was found")
+	}
+}
+
+func TestCodexRestartRetryRestartsSameDaemon(t *testing.T) {
+	// PID reuse: the same PID with a different start time is a new daemon,
+	// while an identical record means the stuck daemon is still there.
+	c := fakeDaemonConfig(t, "exec sleep 30", "exec sleep 30", replaced("202"))
+	c.restartCodexDaemon(context.Background())
+	if res := c.retryCodexRestart(context.Background()); res.Status != "restarted" {
+		t.Fatalf("retry result = %+v", res)
+	}
+	if got := restartCount(t, c); got != "3" {
+		t.Fatalf("stuck daemon was not restarted: %s attempts", got)
+	}
+}
+
 func TestCodexRestartPendingClearsOnSuccess(t *testing.T) {
 	c := fakeDaemonConfig(t, "exec sleep 30", "exec sleep 30", replaced("202"))
 	if res := c.restartCodexDaemon(context.Background()); res.Status != "restart_failed" || !c.codexRestartPending() {
