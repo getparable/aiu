@@ -24,15 +24,18 @@ type CodexDaemonResult struct {
 const codexResumeGuidance = "For standalone sessions, exit Codex and run `codex resume --last --no-daemon` (omit --no-daemon on older versions)."
 
 // Covers a token refresh (one minute), probing (5s), both restart attempts
-// (100s by default), and storage.
-const codexSwitchLockWait = 4 * time.Minute
+// (just over 6 minutes at most), and storage.
+const codexSwitchLockWait = 8 * time.Minute
 
 // A graceful restart drains active turns before replacing the daemon. When it
-// outlives codexRestartWait, a second restart forces the draining daemon out;
-// codexForceWait also covers a full restart if the first never got started.
+// outlives codexRestartWait, a second restart forces a draining daemon out.
+// If the first attempt never reached the daemon (for example, it waited on
+// Codex's lifecycle lock), the second performs the whole restart, so its budget
+// covers that lock, Codex's longest shutdown grace (300s), the forced kill
+// (10s), and startup. A forced restart normally finishes in about a second.
 const (
 	codexRestartWait = 10 * time.Second
-	codexForceWait   = 90 * time.Second
+	codexForceWait   = 6 * time.Minute
 )
 
 func codexDaemonUnchanged() *CodexDaemonResult {
@@ -43,10 +46,16 @@ func codexDaemonUnchanged() *CodexDaemonResult {
 // switch must retry it, since a half-finished restart leaves Codex refusing
 // new sessions ("Server is draining") until another restart completes.
 func (c *Config) restartCodexDaemon(ctx context.Context) *CodexDaemonResult {
-	res := c.reconcileCodexDaemon(ctx)
+	binary, err := c.codexExecutable()
+	if err != nil {
+		// Without an executable AIU can never reconcile, so retrying is moot.
+		c.setCodexRestartPending(false)
+		return &CodexDaemonResult{Status: "unavailable", Message: "Codex executable unavailable; only the saved login changed. Set AIU_CODEX_BIN to its path to enable daemon restarts. " + codexResumeGuidance, Warning: true}
+	}
+	// Marked before starting so an interrupted probe or restart is retried.
+	c.setCodexRestartPending(true)
+	res := c.reconcileCodexDaemon(ctx, binary)
 	switch res.Status {
-	case "restart_failed":
-		c.setCodexRestartPending(true)
 	case "restarted", "not_running", "unsupported":
 		c.setCodexRestartPending(false)
 	}
@@ -54,11 +63,7 @@ func (c *Config) restartCodexDaemon(ctx context.Context) *CodexDaemonResult {
 	return res
 }
 
-func (c *Config) reconcileCodexDaemon(ctx context.Context) *CodexDaemonResult {
-	binary, err := c.codexExecutable()
-	if err != nil {
-		return &CodexDaemonResult{Status: "unavailable", Message: "Codex executable unavailable; only the saved login changed. Set AIU_CODEX_BIN to its path to enable daemon restarts. " + codexResumeGuidance, Warning: true}
-	}
+func (c *Config) reconcileCodexDaemon(ctx context.Context, binary string) *CodexDaemonResult {
 	output, diagnostic, err := c.runCodexDaemonCommand(ctx, binary, "version", 5*time.Second)
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -105,7 +110,7 @@ func (c *Config) reconcileCodexDaemon(ctx context.Context) *CodexDaemonResult {
 		if attempt == 0 {
 			return &CodexDaemonResult{Status: "restarted", Message: "Codex daemon restarted. Connected terminals will reconnect; current turns were interrupted. " + codexResumeGuidance}
 		}
-		return &CodexDaemonResult{Status: "restarted", Message: "Codex daemon restarted after the previous daemon was force-stopped. Connected terminals will reconnect; re-send any interrupted turn. " + codexResumeGuidance}
+		return &CodexDaemonResult{Status: "restarted", Message: "Codex daemon restarted on a second attempt, which force-stops a daemon still finishing turns. Connected terminals will reconnect; re-send any interrupted turn. " + codexResumeGuidance}
 	}
 	return &CodexDaemonResult{Status: "restart_failed", Message: "Login saved, but the Codex daemon restart did not complete, so new Codex sessions may fail with \"Server is draining\". Run `codex app-server daemon restart` (running it again forces a stuck daemon to stop); AIU also retries when you select this account again. " + codexResumeGuidance, Warning: true}
 }

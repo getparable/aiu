@@ -21,7 +21,7 @@ func fakeDaemonConfig(t *testing.T, restarts ...string) *Config {
 	c.Dir = t.TempDir()
 	c.CodexHome = filepath.Join(c.Dir, "codex")
 	c.CodexRestartWait = 300 * time.Millisecond
-	c.CodexForceWait = 300 * time.Millisecond
+	c.CodexForceWait = time.Second
 	daemonDir := filepath.Join(c.CodexHome, "app-server-daemon")
 	if err := os.MkdirAll(daemonDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -78,6 +78,9 @@ func TestCodexDaemonRestartOutcomes(t *testing.T) {
 		{"same daemon survives", []string{`echo '{"status":"restarted","pid":101}'`}, "restart_failed", "2", false, true},
 		{"unparseable success", []string{"exit 0"}, "restart_failed", "2", false, true},
 		{"failure then recovery", []string{"exit 9", replaced("404")}, "restarted", "2", true, false},
+		// The first attempt never got Codex's lifecycle lock; the second gets the
+		// longer budget a full graceful drain needs.
+		{"late drain on second attempt", []string{"exec sleep 30", "sleep 0.6; " + replaced("505")}, "restarted", "2", true, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			c := fakeDaemonConfig(t, tt.restarts...)
@@ -92,7 +95,7 @@ func TestCodexDaemonRestartOutcomes(t *testing.T) {
 			if got := restartCount(t, c); got != tt.calls {
 				t.Fatalf("restart attempts = %s, want %s", got, tt.calls)
 			}
-			if tt.forced != strings.Contains(res.Message, "force-stopped") {
+			if tt.forced != strings.Contains(res.Message, "second attempt") {
 				t.Fatalf("forced restart not reported correctly: %q", res.Message)
 			}
 			if c.codexRestartPending() != tt.pending {
@@ -135,6 +138,17 @@ func TestCodexDaemonRestartLogsWithoutOutput(t *testing.T) {
 	}
 	if strings.Contains(log, "synthetic-secret") {
 		t.Fatal("log recorded raw Codex output")
+	}
+}
+
+func TestCodexRestartPendingSurvivesUnfinishedProbe(t *testing.T) {
+	// Credentials are saved before the daemon is reconciled, so an interrupted
+	// probe must still leave a retry for the next selection.
+	c := fakeDaemonConfig(t, replaced("202"))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if res := c.restartCodexDaemon(ctx); res.Status != "unavailable" || !c.codexRestartPending() {
+		t.Fatalf("result = %+v, pending = %v", res, c.codexRestartPending())
 	}
 }
 
