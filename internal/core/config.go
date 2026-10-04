@@ -118,6 +118,10 @@ type Config struct {
 	ClaudeGlobalConfig string // .claude.json with the cached oauthAccount block
 	CodexHome          string
 	CodexBinary        string // optional executable override; otherwise discover Codex
+	// Budgets for the graceful and forcing `daemon restart` attempts; zero uses
+	// the defaults in codex_daemon.go.
+	CodexRestartWait time.Duration
+	CodexForceWait   time.Duration
 
 	ClaudeUsageURL            string
 	ClaudeProfileURL          string

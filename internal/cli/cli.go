@@ -212,6 +212,12 @@ func run(argv []string, cfg *core.Config) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	// The first Ctrl-C cancels the command; restoring default handling lets a
+	// second one exit at once if the command must finish critical work first.
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 	if err := handler(ctx); err != nil {
 		if errors.Is(err, context.Canceled) {
 			return 130
@@ -543,7 +549,20 @@ func (a *app) switchTo(ctx context.Context) error {
 	if len(a.opts.args) == 0 {
 		return errors.New("usage: aiu switch <email|label> [--codex]")
 	}
+	// A Codex daemon restart that has started keeps running after Ctrl-C;
+	// stopping it midway would leave Codex refusing new sessions.
+	finished, reported := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(reported)
+		select {
+		case <-ctx.Done():
+			fmt.Fprintln(a.stderr, a.p.yellow("Interrupted. Finishing any Codex daemon restart already under way so new Codex sessions keep working; press Ctrl-C again to exit (the restart still completes)."))
+		case <-finished:
+		}
+	}()
 	res, err := a.cfg.SwitchAccount(ctx, a.opts.args[0], a.opts.provider)
+	close(finished)
+	<-reported
 	if err != nil {
 		return err
 	}

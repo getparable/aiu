@@ -77,9 +77,17 @@ For a second account, sign in from a private browser window so the sign-in page 
 Switch with `aiu switch codex:alt` or the Mac app. After saving the selected login,
 AIU checks `codex app-server daemon version` and restarts a running daemon with
 `codex app-server daemon restart`. All terminals attached to that daemon reconnect
-and restore their conversations; current turns are interrupted. Selecting the
-already saved account does not restart it. AIU does not start a stopped daemon or
-terminate standalone Codex processes.
+and reload their saved conversations; turns that were running are interrupted and
+their unfinished work is lost. If active turns keep the daemon from stopping within
+about 10 seconds, AIU restarts it a second time, which makes Codex stop those turns
+and start a replacement.
+AIU confirms that a new daemon process replaced the old one. Selecting the already
+saved account does not restart it, unless an earlier switch's restart did not
+complete and the same daemon is still running. A restart that has started keeps
+running if you press Ctrl-C, because stopping it midway leaves Codex refusing new
+sessions; press Ctrl-C again to exit aiu while the restart completes. AIU does not start a stopped daemon or terminate standalone Codex
+processes. The Codex desktop app and `codex exec` run their own app servers and
+keep the previous account until they restart.
 
 Standalone sessions (`--no-daemon`) and older Codex versions still need a manual
 restart. Exit with `/exit`, then run this from the same project directory:
@@ -93,6 +101,10 @@ reusing a shared Codex daemon's cached account. If your Codex version does not
 support that flag, use `codex resume --last`. Use `codex resume <SESSION_ID>` in
 place of `--last` to choose a specific conversation. If the daemon restart fails,
 AIU keeps the saved login and reports a warning with the manual restart command.
+Until a restart completes, new Codex sessions can fail with "Server is draining";
+running `codex app-server daemon restart` again forces the stuck daemon to stop.
+AIU records each daemon step, without command output or credentials, in
+`codex-daemon.log` in its config directory.
 
 AIU discovers `codex` on PATH, then checks `~/.local/bin`, `/opt/homebrew/bin`, and
 `/usr/local/bin` for apps launched from Finder. For another installation location,
