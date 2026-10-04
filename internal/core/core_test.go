@@ -479,7 +479,7 @@ case "$*" in
   'app-server daemon version') echo '{"status":"running"}' ;;
   'app-server daemon restart')
     case "$(cat "$CODEX_HOME/auth.json")" in
-      *x@example.com*) echo restarted >> "$CODEX_HOME/restarts" ;;
+      *x@example.com*) echo restarted >> "$CODEX_HOME/restarts"; echo '{"status":"restarted","pid":202}' ;;
       *) exit 9 ;;
     esac ;;
   *) exit 8 ;;

@@ -51,7 +51,10 @@ Codex switches save the selected credentials and restart a running shared daemon
 Attached terminals reconnect; current turns are interrupted. A daemon restart
 failure leaves the login saved, so the terminal result remains `ok: true` and its
 `message` includes the warning and manual restart command. Frontends should display
-that message. Selecting the already saved account does not restart the daemon.
+that message. A `restarted` status means AIU saw a new daemon PID; its message
+says whether the previous daemon had to be force-stopped. Selecting the already
+saved account does not restart the daemon unless an earlier restart failed, in
+which case `alreadyActive` is true and `codexDaemon` reports the retry.
 Standalone Codex sessions still need a manual exit and resume.
 
 Codex rows add an optional `bankedResets` object: `availableCount` is nullable,

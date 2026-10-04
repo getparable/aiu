@@ -22,6 +22,7 @@ func codexSwitchConfig(t *testing.T) *core.Config {
 	cfg.Dir = t.TempDir()
 	cfg.CodexHome = filepath.Join(cfg.Dir, "codex")
 	cfg.CodexBinary = filepath.Join(cfg.Dir, "missing-codex")
+	cfg.CodexRestartWait, cfg.CodexForceWait = 300*time.Millisecond, 300*time.Millisecond
 	cfg.UseKeychain, cfg.UseDPAPI = false, false
 	cfg.Warn = func(string) {}
 	claims := base64.RawURLEncoding.EncodeToString([]byte(`{"email":"fixture@example.test","https://api.openai.com/auth":{"chatgpt_account_id":"fixture-account","chatgpt_plan_type":"pro"}}`))
@@ -78,16 +79,16 @@ func TestCodexSwitchDaemonOutcomes(t *testing.T) {
 		warning                            bool
 		timeout                            bool
 	}{
-		{"running", `echo '{"status":"running"}'`, "exit 0", "restarted", "Connected terminals will reconnect", false, false},
+		{"running", `echo '{"status":"running"}'`, `echo '{"status":"restarted","pid":202}'`, "restarted", "Connected terminals will reconnect", false, false},
 		{"stopped", `echo '{"status":"stopped"}'`, "exit 99", "not_running", "only the saved login changed", false, false},
 		{"probe failure", "echo 'permission denied: synthetic-secret' >&2; exit 2", "exit 99", "unavailable", "status could not be checked", true, false},
 		{"older CLI", `echo "error: unrecognized subcommand 'daemon'" >&2; exit 2`, "exit 99", "unsupported", "no daemon management", false, false},
 		{"absent daemon socket", `echo "Error: failed to connect to $CODEX_HOME/app-server-control/app-server-control.sock" >&2; echo 'No such file or directory (os error 2)' >&2; exit 1`, "exit 99", "not_running", "not running", false, false},
-		{"restart failed", `echo '{"status":"running"}'`, "exit 9", "restart_failed", "restart failed", true, false},
+		{"restart failed", `echo '{"status":"running"}'`, "exit 9", "restart_failed", "restart did not complete", true, false},
 		{"invalid status", `echo 'not JSON'`, "exit 99", "unavailable", "unrecognized daemon status", true, false},
 		{"unknown status", `echo '{"status":"error"}'`, "exit 99", "unavailable", "unrecognized daemon status", true, false},
 		{"probe cancelled", "exec sleep 30", "exit 99", "unavailable", "status could not be checked", true, true},
-		{"restart cancelled", `echo '{"status":"running"}'`, "exec sleep 30", "restart_failed", "restart failed", true, true},
+		{"restart cancelled", `echo '{"status":"running"}'`, "exec sleep 30", "restart_failed", "restart did not complete", true, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			for _, asJSON := range []bool{false, true} {
@@ -137,6 +138,43 @@ func TestCodexSwitchDaemonOutcomes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCodexSwitchRetriesUnfinishedRestart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake Codex executable uses a POSIX shell")
+	}
+	cfg := codexSwitchConfig(t)
+	cfg.CodexBinary = filepath.Join(cfg.Dir, "fake-codex")
+	// The first switch's restarts never finish; reselecting the same account
+	// must retry instead of reporting the daemon unchanged.
+	script := `#!/bin/sh
+case "$*" in
+'app-server daemon version') echo '{"status":"running"}' ;;
+'app-server daemon restart')
+  n=$(( $(cat "$CODEX_HOME/restarts" 2>/dev/null || echo 0) + 1 )); echo $n > "$CODEX_HOME/restarts"
+  [ $n -le 2 ] && exec sleep 30
+  echo '{"status":"restarted","pid":202}' ;;
+*) exit 99 ;;
+esac
+`
+	if err := os.WriteFile(cfg.CodexBinary, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"restart_failed", "restarted", "unchanged"} {
+		var stdout, stderr bytes.Buffer
+		a := &app{cfg: cfg, opts: &options{args: []string{"codex:work"}, json: true}, stdout: &stdout, stderr: &stderr}
+		if err := a.switchTo(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		var result core.SwitchResult
+		if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.CodexDaemon == nil || result.CodexDaemon.Status != want {
+			t.Fatalf("daemon result = %+v, want %s", result.CodexDaemon, want)
+		}
 	}
 }
 

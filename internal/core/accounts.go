@@ -435,6 +435,11 @@ func (c *Config) SwitchAccount(ctx context.Context, target string, provider Prov
 			if live != nil && m.Is(rec) && live.refreshToken() == rec.RefreshToken {
 				res.AlreadyActive = true
 				res.CodexDaemon = codexDaemonUnchanged()
+				if c.codexRestartPending() {
+					// An earlier switch saved this login but its restart never
+					// finished; the daemon may still be draining.
+					res.CodexDaemon = c.restartCodexDaemon(ctx)
+				}
 				return nil
 			}
 			if live != nil && !tracked(synced, m, Codex) {
