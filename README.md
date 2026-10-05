@@ -74,6 +74,14 @@ aiu --json                     # for scripts and status bars
 
 For a second account, sign in from a private browser window so the sign-in page does not reuse the account your browser is already logged in to.
 
+If an account's stored tokens expire or fall out of sync, choose **Relink with Browser**
+from its `…` menu in the Mac app. Expired accounts also show a relink button on the
+card. Authorize using that account's current browser session; Copy Link lets you
+use a private window if your browser opens another account. AIU replaces the stored
+credentials, keeps the label, and refreshes usage. Signing in to a different email
+or organization fails without changing the tracked accounts. From the terminal,
+use `aiu login claude:work` or `aiu login codex:work` to relink a tracked label.
+
 Switch with `aiu switch codex:alt` or the Mac app. After saving the selected login,
 AIU checks `codex app-server daemon version` and restarts a running daemon with
 `codex app-server daemon restart`. All terminals attached to that daemon reconnect

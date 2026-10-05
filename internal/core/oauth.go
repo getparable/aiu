@@ -296,8 +296,9 @@ func (c *Config) exchangeCodexCode(ctx context.Context, code, verifier, redirect
 // LoginOptions selects which login to start.
 type LoginOptions struct {
 	Provider   Provider
-	ReadOnly   bool // Claude only: a user:profile token that cannot run inference
-	Manual     bool // Claude only: paste code#state instead of a loopback callback
+	Selector   string // optional tracked account to relink; identity must match
+	ReadOnly   bool   // Claude only: a user:profile token that cannot run inference
+	Manual     bool   // Claude only: paste code#state instead of a loopback callback
 	UseConsole bool
 }
 
@@ -312,6 +313,7 @@ type LoginSession struct {
 	verifier    string
 	state       string
 	callback    *callbackServer
+	target      *IndexEntry
 }
 
 // Cancel stops waiting for the browser.
@@ -337,8 +339,17 @@ func pkce() (verifier, challenge, state string) {
 // BeginLogin binds the callback listener first, so the authorize URL it returns
 // always points at a port this session owns.
 func (c *Config) BeginLogin(opts LoginOptions) (*LoginSession, error) {
+	var target *IndexEntry
+	if opts.Selector != "" {
+		_, entry, err := c.FindAccount(opts.Selector, opts.Provider)
+		if err != nil {
+			return nil, err
+		}
+		target = entry
+		opts.Provider = entry.Provider
+	}
 	verifier, challenge, state := pkce()
-	s := &LoginSession{Provider: opts.Provider, verifier: verifier, state: state, Manual: opts.Manual}
+	s := &LoginSession{Provider: opts.Provider, verifier: verifier, state: state, Manual: opts.Manual, target: target}
 
 	if opts.Provider == Codex {
 		if opts.Manual {
@@ -439,13 +450,13 @@ func (c *Config) CompleteLogin(ctx context.Context, s *LoginSession, code, label
 		if err != nil {
 			return nil, err
 		}
-		return c.persistAccount(ctx, c.codexTokensFromResponse(body, nil), label, "oauth-login", false)
+		return c.persistAccountFor(ctx, c.codexTokensFromResponse(body, nil), label, "oauth-login", false, s.target)
 	}
 	body, err := c.exchangeClaudeCode(ctx, code, s.state, s.verifier, s.redirectURI)
 	if err != nil {
 		return nil, err
 	}
-	return c.persistAccount(ctx, c.claudeTokensFromResponse(body, ""), label, "oauth-login", false)
+	return c.persistAccountFor(ctx, c.claudeTokensFromResponse(body, ""), label, "oauth-login", false, s.target)
 }
 
 func safeEqual(a, b string) bool {

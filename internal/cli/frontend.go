@@ -77,8 +77,12 @@ func runFrontend(opts *options, cfg *core.Config, in io.Reader, out io.Writer) i
 		emit(frontendEvent{Event: "result", Error: &frontendError{Code: "invalid_command", Message: command + " needs one selector"}})
 		return 2
 	}
-	if (command == "status" || command == "add" || command == "login" || command == "sync") && len(opts.args) != 1 {
+	if (command == "status" || command == "add" || command == "sync") && len(opts.args) != 1 {
 		emit(frontendEvent{Event: "result", Error: &frontendError{Code: "invalid_command", Message: command + " does not accept a selector"}})
+		return 2
+	}
+	if command == "login" && len(opts.args) > 2 {
+		emit(frontendEvent{Event: "result", Error: &frontendError{Code: "invalid_command", Message: "login accepts at most one account selector"}})
 		return 2
 	}
 	if opts.manual {
@@ -186,7 +190,11 @@ func frontendCommand(ctx context.Context, cfg *core.Config, opts *options, comma
 		}
 		return "account added", nil
 	case "login":
-		s, err := cfg.BeginLogin(core.LoginOptions{Provider: frontendProvider(opts), ReadOnly: opts.readOnly, Manual: opts.manual, UseConsole: opts.console})
+		provider := frontendProvider(opts)
+		if selector != "" {
+			provider = opts.provider
+		}
+		s, err := cfg.BeginLogin(core.LoginOptions{Provider: provider, Selector: selector, ReadOnly: opts.readOnly, Manual: opts.manual, UseConsole: opts.console})
 		if err != nil {
 			return "", err
 		}

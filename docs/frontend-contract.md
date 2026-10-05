@@ -11,6 +11,7 @@ Run one child per operation:
 ```text
 aiu frontend status --contract-version 1
 aiu frontend login --provider claude --label Work --contract-version 1
+aiu frontend login codex:person@example.test#account-id --contract-version 1
 aiu frontend switch claude:person@example.test#organization --contract-version 1
 ```
 
@@ -21,6 +22,13 @@ require one full account selector; append `#` even for an empty organization.
 `--label` applies to import/login. Browser login is supported; use the normal
 terminal `login --manual` for manual Claude authorization. `--no-open` is intended
 for controlled tests; the contract deliberately never emits the authorization URL.
+
+`login` accepts an optional tracked account selector to relink through its current
+browser session. The selector determines the provider. Go checks the authorized
+email and organization/account ID before saving; a mismatch fails without adding
+or replacing accounts. A matching login replaces credentials and preserves the
+existing label unless `--label` supplies a new one. Normal login without a selector
+still adds or updates the browser's authorized account.
 
 Stdout contains JSON Lines only. Each line has `version: 1` and an `event`:
 

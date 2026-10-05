@@ -337,11 +337,25 @@ func (a *app) add(ctx context.Context) error {
 }
 
 func (a *app) login(ctx context.Context) error {
+	if len(a.opts.args) > 1 {
+		return errors.New("usage: aiu login [email|label] [--codex] [--no-open]")
+	}
+	selector := ""
+	if len(a.opts.args) == 1 {
+		selector = a.opts.args[0]
+	}
 	pr := a.provider()
+	if selector != "" {
+		_, entry, err := a.cfg.FindAccount(selector, a.opts.provider)
+		if err != nil {
+			return err
+		}
+		pr = entry.Provider
+	}
 	if pr == core.Codex && a.opts.readOnly {
 		fmt.Fprintln(a.stdout, a.p.dim("--readonly applies to Claude logins only"))
 	}
-	s, err := a.cfg.BeginLogin(core.LoginOptions{Provider: pr, ReadOnly: a.opts.readOnly, Manual: a.opts.manual, UseConsole: a.opts.console})
+	s, err := a.cfg.BeginLogin(core.LoginOptions{Provider: pr, Selector: selector, ReadOnly: a.opts.readOnly, Manual: a.opts.manual, UseConsole: a.opts.console})
 	if err != nil {
 		return err
 	}
@@ -622,6 +636,7 @@ func (a *app) help() {
   aiu watch [--interval 60]                           live view (requests: ≤1 per %.0f min per account)
   aiu add [--label NAME]                              track the account Claude Code is signed in as
   aiu login [--label NAME] [--readonly] [--manual]    browser sign-in for another account
+  aiu login <email|label>                             relink a tracked account with its browser session
   aiu switch <email|label>                            point Claude Code (or Codex) at a tracked account
   aiu list | remove <email|label> | sync | whoami
   aiu link [install|remove|status]                    add or drop the ~/.local/bin/aiu shortcut
