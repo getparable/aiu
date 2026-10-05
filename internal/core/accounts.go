@@ -18,6 +18,10 @@ type SavedAccount struct {
 
 // persistAccount identifies a token set, then stores it and indexes the account.
 func (c *Config) persistAccount(ctx context.Context, working *Record, label, source string, mergeClaudeJSON bool) (*SavedAccount, error) {
+	return c.persistAccountFor(ctx, working, label, source, mergeClaudeJSON, nil)
+}
+
+func (c *Config) persistAccountFor(ctx context.Context, working *Record, label, source string, mergeClaudeJSON bool, target *IndexEntry) (*SavedAccount, error) {
 	var email, org, orgName string
 	profile := map[string]any{}
 	if working.Provider == Codex {
@@ -50,6 +54,9 @@ func (c *Config) persistAccount(ctx context.Context, working *Record, label, sou
 		}
 	}
 
+	if target != nil && (target.Provider != working.Provider || target.Email != email || target.Org != org) {
+		return nil, fmt.Errorf("browser signed in to a different account or organization; relink %s using its browser session, or copy the sign-in link into a private window", target.Describe())
+	}
 	idx, err := c.LoadIndex()
 	if err != nil {
 		return nil, err
@@ -59,6 +66,9 @@ func (c *Config) persistAccount(ctx context.Context, working *Record, label, sou
 		if e.Email == email && e.Provider == working.Provider && e.Org == org {
 			existing = e
 		}
+	}
+	if target != nil && existing == nil {
+		return nil, errors.New("the account was removed while signing in; add it again to track it")
 	}
 	if label == "" && existing != nil {
 		label = existing.Label

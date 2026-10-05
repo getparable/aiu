@@ -120,6 +120,7 @@ final class Store {
 
     // Sign-in in progress
     var loginProvider: Provider?
+    var loginAccount: Account?
     var loginURL: URL?
     var loginOutput = ""
 
@@ -426,20 +427,21 @@ final class Store {
 
     /// Runs `aiu login --no-open` and surfaces its URL, so the user can open it in a
     /// private window when the browser is signed in to another account.
-    func beginLogin(_ provider: Provider, label: String) {
+    func beginLogin(_ provider: Provider, label: String, account: Account? = nil) {
         cancelLogin()
         var args = ["login", "--no-open"] + (provider == .codex ? ["--codex"] : [])
+        if let account { args += [account.id] }
         if !label.isEmpty { args += ["--label", label] }
         let process = CLI.makeProcess(args)
         let out = Pipe(), err = Pipe()
         process.standardOutput = out
         process.standardError = err
         let errBox = DataBox()
-        out.fileHandleForReading.readabilityHandler = { handle in
+        out.fileHandleForReading.readabilityHandler = { [weak self, weak process] handle in
             let text = String(decoding: handle.availableData, as: UTF8.self)
             guard !text.isEmpty else { return }
-            Task { @MainActor [weak self] in
-                guard let self else { return }
+            Task { @MainActor [weak self, weak process] in
+                guard let self, let process, self.loginProcess === process else { return }
                 self.loginOutput += text
                 if self.loginURL == nil, let range = self.loginOutput.range(of: #"https://\S+"#, options: .regularExpression) {
                     self.loginURL = URL(string: String(self.loginOutput[range]))
@@ -448,7 +450,7 @@ final class Store {
             }
         }
         err.fileHandleForReading.readabilityHandler = { handle in errBox.data.append(handle.availableData) }
-        process.terminationHandler = { finished in
+        process.terminationHandler = { [weak self] finished in
             out.fileHandleForReading.readabilityHandler = nil
             err.fileHandleForReading.readabilityHandler = nil
             let status = finished.terminationStatus
@@ -457,6 +459,7 @@ final class Store {
                 guard let self, self.loginProcess === finished else { return }
                 self.loginProcess = nil
                 self.loginProvider = nil
+                self.loginAccount = nil
                 self.loginURL = nil
                 if status == 0 {
                     let added = self.loginOutput.split(separator: "\n").first { $0.contains("✔") }
@@ -472,6 +475,7 @@ final class Store {
             try process.run()
             loginProcess = process
             loginProvider = provider
+            loginAccount = account
             lastError = nil
         } catch {
             lastError = error.localizedDescription
@@ -482,6 +486,7 @@ final class Store {
         loginProcess?.interrupt() // SIGINT: aiu closes its callback listener and exits
         loginProcess = nil
         loginProvider = nil
+        loginAccount = nil
         loginURL = nil
         loginOutput = ""
     }
@@ -682,6 +687,13 @@ struct AccountBody: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
             }
+            if account.needsLogin {
+                Button("Relink with browser", systemImage: "globe") {
+                    store.beginLogin(account.kind, label: "", account: account)
+                }
+                .buttonStyle(.glass)
+                .disabled(store.loginProvider != nil)
+            }
         }
     }
 
@@ -691,9 +703,10 @@ struct AccountBody: View {
                 Button("Switch \(account.kind.client) to This Account") { Task { await store.switchTo(account) } }
                     .disabled(store.switching)
             }
-            if account.needsLogin || account.login.state == "expiring" {
-                Button("Sign In Again…") { store.beginLogin(account.kind, label: account.label) }
+            Button("Relink with Browser…", systemImage: "globe") {
+                store.beginLogin(account.kind, label: "", account: account)
             }
+            .disabled(store.loginProvider != nil)
             if let resets = account.bankedResets {
                 Button {
                     showingBankedResets = true
@@ -1099,12 +1112,21 @@ struct AddAccountView: View {
 
     private func waiting(_ pending: Provider) -> some View {
         VStack(alignment: .leading, spacing: 10) {
+            if let account = store.loginAccount {
+                Text("Relinking \(account.label)").font(.headline)
+                Text(account.email).font(.caption).foregroundStyle(.secondary)
+                if let organization = account.distinctOrgName {
+                    Text(organization).font(.caption).foregroundStyle(.secondary)
+                }
+            }
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
                 Text("Waiting for \(pending.name) sign-in…")
                     .font(.callout.weight(.medium))
             }
-            Text("Finish signing in in your browser. If it opened the wrong account, copy the link into a private window instead.")
+            Text(store.loginAccount == nil
+                 ? "Finish signing in in your browser. If it opened the wrong account, copy the link into a private window instead."
+                 : "Authorize the account above using its current browser session. If another account opens, copy the link into a private window. Your label will stay the same.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .wrapsVertically()
@@ -1392,16 +1414,20 @@ struct Panel: View {
         .frame(width: 360)
         .onAppear {
             // The panel reopens where it was left; the summary belongs on screen.
-            pane = .usage
+            pane = store.loginProvider == nil ? .usage : .add
             listPosition.scrollTo(edge: .top)
             store.refreshIfStale()
         }
         .animation(.smooth(duration: 0.25), value: pane)
+        .onChange(of: store.loginProvider) { _, pending in
+            if pending != nil { pane = .add }
+            else if pane == .add { pane = .usage }
+        }
     }
 
     private var header: some View {
         HStack(spacing: 8) {
-            Text(pane == .add ? "Add Account" : pane == .settings ? "Settings" : "Usage")
+            Text(pane == .add ? (store.loginAccount == nil ? "Add Account" : "Relink Account") : pane == .settings ? "Settings" : "Usage")
                 .font(.title3.weight(.semibold))
             Spacer()
             if pane == .usage {
@@ -1410,7 +1436,10 @@ struct Panel: View {
                 iconButton("plus", help: "Add account") { pane = .add }
                 iconButton("gearshape", help: "Settings") { pane = .settings }
             } else {
-                iconButton("xmark", help: "Back") { pane = .usage }
+                iconButton("xmark", help: "Back") {
+                    if pane == .add { store.cancelLogin() }
+                    pane = .usage
+                }
             }
         }
         .padding(.horizontal, 10)

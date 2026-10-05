@@ -68,6 +68,28 @@ func TestFrontendInvalidCommandIsStructured(t *testing.T) {
 	}
 }
 
+func TestFrontendRelinkAcceptsAccountSelector(t *testing.T) {
+	cfg := core.DefaultConfig()
+	cfg.Dir = t.TempDir()
+	cfg.UseKeychain, cfg.UseDPAPI = false, false
+	index := []byte(`{"version":1,"accounts":[{"provider":"claude","email":"fixture@example.test","org":"fixture-org","label":"Work"}]}`)
+	if err := os.WriteFile(filepath.Join(cfg.Dir, "accounts.json"), index, 0600); err != nil {
+		t.Fatal(err)
+	}
+	opts, err := parse([]string{"frontend", "login", "claude:fixture@example.test#fixture-org", "--no-open"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	// EOF cancels an accepted browser login without contacting a provider.
+	code := runFrontend(opts, cfg, bytes.NewReader(nil), &out)
+	events := decodeFrontend(t, out.Bytes())
+	last := events[len(events)-1]
+	if code != 130 || !last.Cancelled {
+		t.Fatalf("relink must start login and accept cancellation: exit=%d result=%+v", code, last)
+	}
+}
+
 func TestFrontendLoginCancelIsTerminal(t *testing.T) {
 	var out bytes.Buffer
 	code := runFrontend(&options{args: []string{"login"}, noOpen: true}, core.DefaultConfig(), bytes.NewBufferString(`{"cancel":true}`+"\n"), &out)
