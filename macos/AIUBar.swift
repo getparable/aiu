@@ -1392,25 +1392,25 @@ struct Panel: View {
     @State private var listPosition = ScrollPosition(edge: .top)
 
     var body: some View {
-        GlassEffectContainer(spacing: 8) {
-            VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 12) {
+            GlassEffectContainer(spacing: 8) {
                 header
-                if let error = store.lastError {
-                    Label(error, systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(4)
-                        .padding(.horizontal, 4)
-                }
-                switch pane {
-                case .usage: usage
-                case .add: AddAccountView { pane = .usage }
-                case .settings: SettingsView()
-                }
-                footer
             }
-            .padding(12)
+            if let error = store.lastError {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(4)
+                    .padding(.horizontal, 4)
+            }
+            switch pane {
+            case .usage: usage
+            case .add: AddAccountView { pane = .usage }
+            case .settings: SettingsView()
+            }
+            footer
         }
+        .padding(12)
         .frame(width: 360)
         .onAppear {
             // The panel reopens where it was left; the summary belongs on screen.
@@ -1462,13 +1462,15 @@ struct Panel: View {
             ProgressView().frame(maxWidth: .infinity).padding(24)
         } else {
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    SummaryCard()
-                    ForEach(Provider.allCases) { ProviderSection(provider: $0) }
+                GlassEffectContainer(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        SummaryCard()
+                        ForEach(Provider.allCases) { ProviderSection(provider: $0) }
+                    }
+                    // Keep the cards clear of the indicator instead of under it.
+                    .padding(.trailing, 9)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { listHeight = $0 }
                 }
-                // Keep the cards clear of the indicator instead of under it.
-                .padding(.trailing, 9)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { listHeight = $0 }
             }
             .scrollPosition($listPosition)
             .scrollBounceBehavior(.basedOnSize)
