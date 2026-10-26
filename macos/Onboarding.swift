@@ -57,7 +57,7 @@ enum OnboardingWindow {
             NSApp.activate()
             return
         }
-        let root = OnboardingView { window?.close() }.environment(store)
+        let root = OnboardingView { OnboardingWindow.window?.close() }.environment(store)
         let window = NSWindow(contentViewController: NSHostingController(rootView: root))
         window.styleMask = [.titled, .closable, .fullSizeContentView]
         window.titlebarAppearsTransparent = true
