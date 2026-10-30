@@ -284,7 +284,9 @@ func (c *Config) SyncCodex(records []*Record, adopt bool) (*LiveCodex, LiveMatch
 
 // ---------------------------------------------------------------- usage
 
-var deadLogin = regexp.MustCompile(`(?i)invalid_grant|no refresh token|refresh token`)
+// Refresh 401s can say only "Your session has ended", without naming a refresh
+// token. Match the status as well so cached failures still require a new login.
+var deadLogin = regexp.MustCompile(`(?i)invalid_grant|no refresh token|refresh token|token refresh failed \(401 @`)
 
 // isDeadLoginError is an error meaning the stored login is gone, not that a request failed.
 func isDeadLoginError(msg string) bool { return msg != "" && deadLogin.MatchString(msg) }
