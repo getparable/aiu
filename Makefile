@@ -1,4 +1,4 @@
-VERSION   ?= 0.3.8
+VERSION   ?= 0.3.9
 BUILD     ?= $(shell git rev-list --count HEAD 2>/dev/null || echo 1)
 BUNDLE_ID ?= dev.aiu.menubar
 CLI_ID    ?= io.getparable.aiu.cli
