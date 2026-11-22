@@ -129,7 +129,7 @@ struct Account: Decodable, Identifiable, Hashable {
     // list keyed only by address collapses them into one row.
     var id: String { "\(provider):\(email)#\(org ?? "")" }
     var kind: Provider { Provider(rawValue: provider) ?? .claude }
-    var session: UsageWindow? { windows.first { $0.group == "session" } }
+    var session: UsageWindow? { windows.filter { $0.group == "session" }.max { $0.percent < $1.percent } }
     var busiestWeekly: UsageWindow? { windows.filter { $0.group == "weekly" }.max { $0.percent < $1.percent } }
     /// What limits the account right now.
     var tightest: Double { max(session?.percent ?? 0, busiestWeekly?.percent ?? 0) }

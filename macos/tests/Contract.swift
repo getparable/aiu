@@ -59,12 +59,13 @@ struct ContractTest {
         let raw = try String(contentsOf: directory.appendingPathComponent("accounts.json"), encoding: .utf8)
             .replacingOccurrences(of: "2030-01-01T00:00:00Z", with: "2030-01-01T00:00:00.123Z")
         _ = try AIUJSON.decoder().decode([Account].self, from: Data(raw.utf8))
-        // Passive Antigravity accounts decode as read-only and non-switchable.
-        let agyJSON = #"[{"provider":"antigravity","email":"dev@example.test","label":"dev","active":true,"tier":"Google AI Pro","login":{"state":"ok","message":"updated just now via agy"},"readOnly":true,"canSwitch":false,"windows":[{"key":"gemini-weekly","group":"weekly","label":"7d Gemini","percent":6.22,"known":true,"resetsAt":"2030-01-07T00:00:00Z"}],"fetchedAt":"2030-01-01T00:00:00Z","rank":0,"note":"read-only"}]"#
+        // Passive Antigravity accounts decode as read-only and non-switchable, and tightest considers every session window.
+        let agyJSON = #"[{"provider":"antigravity","email":"dev@example.test","label":"dev","active":true,"tier":"Google AI Pro","login":{"state":"ok","message":"updated just now via agy"},"readOnly":true,"canSwitch":false,"windows":[{"key":"gemini-5h","group":"session","label":"5h Gemini","percent":10,"known":true,"resetsAt":"2030-01-01T05:00:00Z"},{"key":"claude-5h","group":"session","label":"5h Claude","percent":100,"known":true,"resetsAt":"2030-01-01T05:00:00Z"},{"key":"gemini-weekly","group":"weekly","label":"7d Gemini","percent":6.22,"known":true,"resetsAt":"2030-01-07T00:00:00Z"}],"fetchedAt":"2030-01-01T00:00:00Z","rank":0,"note":"read-only"}]"#
         let agyAccounts = try AIUJSON.decoder().decode([Account].self, from: Data(agyJSON.utf8))
         precondition(agyAccounts.count == 1 && agyAccounts[0].kind == .antigravity)
         precondition(agyAccounts[0].readOnly && !agyAccounts[0].canSwitch && !agyAccounts[0].kind.supportsSwitch)
-        precondition(agyAccounts[0].windows.count == 1 && agyAccounts[0].windows[0].label == "7d Gemini")
+        precondition(agyAccounts[0].windows.count == 3 && agyAccounts[0].windows[2].label == "7d Gemini")
+        precondition(agyAccounts[0].tightest == 100)
         print("PASS: SwiftUI model decodes the shared Go account contract")
     }
 }

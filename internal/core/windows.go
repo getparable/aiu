@@ -442,10 +442,9 @@ func (h Headroom) Tightest() float64 { return math.Max(h.Session, h.Weekly) }
 // HeadroomOf summarises windows.
 func HeadroomOf(ws []Window) Headroom {
 	var h Headroom
-	sessionSeen := false
 	for _, w := range ws {
-		if w.Group == "session" && !sessionSeen {
-			h.Session, sessionSeen = w.Percent, true
+		if w.Group == "session" && w.Percent > h.Session {
+			h.Session = w.Percent
 		}
 		if w.Group == "weekly" && w.Percent > h.Weekly {
 			h.Weekly = w.Percent
