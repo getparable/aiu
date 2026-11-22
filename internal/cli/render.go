@@ -25,8 +25,9 @@ func (p painter) bold(s string) string   { return p.paint("1", s) }
 func (p painter) dim(s string) string    { return p.paint("2", s) }
 func (p painter) green(s string) string  { return p.paint("32", s) }
 func (p painter) yellow(s string) string { return p.paint("33", s) }
-func (p painter) red(s string) string    { return p.paint("31", s) }
-func (p painter) cyan(s string) string   { return p.paint("36", s) }
+func (p painter) red(s string) string     { return p.paint("31", s) }
+func (p painter) magenta(s string) string { return p.paint("35", s) }
+func (p painter) cyan(s string) string    { return p.paint("36", s) }
 
 func (p painter) forPercent(pct float64, s string) string {
 	switch core.SeverityFor(pct) {
@@ -40,10 +41,14 @@ func (p painter) forPercent(pct float64, s string) string {
 
 func (p painter) tag(pr core.Provider) string {
 	text := pr.Glyph() + " " + pr.Name()
-	if pr == core.Codex {
+	switch pr {
+	case core.Codex:
 		return p.cyan(text)
+	case core.Antigravity:
+		return p.magenta(text)
+	default:
+		return p.yellow(text)
 	}
-	return p.yellow(text)
 }
 
 func (p painter) bar(w core.Window) string {
@@ -134,6 +139,9 @@ func renderAccount(p painter, res *core.Result, labelWidth int, tagged bool, now
 			util = fmt.Sprintf("  (%.0f%%)", extra.Utilization)
 		}
 		lines = append(lines, fmt.Sprintf("  %-*s %s", lw, "extra usage", p.dim("$"+extra.Used+" / $"+extra.Limit+util)))
+	}
+	for _, credit := range core.AgyCreditsOf(res.Usage) {
+		lines = append(lines, fmt.Sprintf("  %-*s %s", lw, credit.Label, p.dim(fmt.Sprintf("%.0f remaining", credit.Remaining))))
 	}
 	return lines
 }

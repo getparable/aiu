@@ -272,16 +272,18 @@ func slug(name string) string {
 	return strings.Trim(nonWord.ReplaceAllString(strings.ToLower(name), "-"), "-")
 }
 
-var prefixed = regexp.MustCompile(`(?i)^(claude|codex):(.+)$`)
+var prefixed = regexp.MustCompile(`(?i)^(claude|codex|antigravity|agy):(.+)$`)
 
-// FindAccount resolves an email or label. A claude:/codex: prefix (or provider)
+// FindAccount resolves an email or label. A claude:/codex:/agy: prefix (or provider)
 // narrows the search; a name tracked for both providers is an error, not a guess.
 // The full key a listing prints — provider:email#organization — also resolves, which
 // is what front ends pass when one address holds several organizations.
 func (c *Config) FindAccount(target string, provider Provider) (*Index, *IndexEntry, error) {
 	name := target
 	if m := prefixed.FindStringSubmatch(target); m != nil {
-		provider, name = Provider(strings.ToLower(m[1])), m[2]
+		if p, ok := ParseProvider(strings.ToLower(m[1])); ok {
+			provider, name = p, m[2]
+		}
 	}
 	name, org, hasOrg := strings.Cut(name, "#")
 	idx, err := c.LoadIndex()
@@ -308,7 +310,7 @@ func (c *Config) FindAccount(target string, provider Provider) (*Index, *IndexEn
 			for i, e := range found {
 				names[i] = e.Label + " → " + e.Describe()
 			}
-			return nil, fmt.Errorf("%q matches %d accounts (%s) — use the label, or claude:/codex:", name, len(found), strings.Join(names, ", "))
+			return nil, fmt.Errorf("%q matches %d accounts (%s) — use the label, or claude:/codex:/agy:", name, len(found), strings.Join(names, ", "))
 		}
 		if len(found) == 1 {
 			return found[0], nil
@@ -349,8 +351,10 @@ func (c *Config) RemoveAccount(target string, provider Provider) (*IndexEntry, e
 			return nil, err
 		}
 	}
-	if err := c.tokenDelete(key); err != nil {
-		return nil, err
+	if !e.Provider.IsPassive() {
+		if err := c.tokenDelete(key); err != nil {
+			return nil, err
+		}
 	}
 	kept := idx.Accounts[:0]
 	for _, a := range idx.Accounts {
@@ -363,6 +367,9 @@ func (c *Config) RemoveAccount(target string, provider Provider) (*IndexEntry, e
 		return nil, err
 	}
 	c.cacheDelete(storeKey(e.Provider, e.Email, e.Org))
+	if e.Provider == Antigravity && c.AgyActiveEmail() == e.Email {
+		c.cacheDelete(agyActiveKey)
+	}
 	return e, nil
 }
 
@@ -388,6 +395,9 @@ func (c *Config) DescribeLive(ctx context.Context, verify bool) (map[Provider]*L
 	if live := c.ReadCodexAuth(); live != nil {
 		id := live.identity()
 		out[Codex] = &LiveMatch{Email: id.Email, Org: id.AccountID, Verified: id.Email != ""}
+	}
+	if email := c.AgyActiveEmail(); email != "" {
+		out[Antigravity] = &LiveMatch{Email: email, Verified: true}
 	}
 	return out, nil
 }
@@ -432,6 +442,10 @@ func (c *Config) SwitchAccount(ctx context.Context, target string, provider Prov
 		return false
 	}
 	res := &SwitchResult{Entry: e}
+
+	if e.Provider.IsPassive() {
+		return nil, fmt.Errorf("%s is tracked read-only via %s statusLine and cannot be switched by aiu — use /logout in agy to switch accounts", e.Describe(), e.Provider.Client())
+	}
 
 	if e.Provider == Codex {
 		// Serialize saving credentials and restarting across CLI/app switches.

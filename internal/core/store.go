@@ -52,9 +52,12 @@ func (r *Record) IsExpired(now time.Time, margin time.Duration) bool {
 	return r.ExpiresAt == 0 || r.ExpiresAt-now.UnixMilli() <= margin.Milliseconds()
 }
 
-// IsReadOnly is a login minted with only user:profile: it reads usage but cannot run
-// inference, so it can never be switched to.
+// IsReadOnly is a login minted with only user:profile (Claude) or a passively
+// tracked provider (Antigravity): it reads usage but cannot be switched to.
 func (r *Record) IsReadOnly() bool {
+	if r.Provider.IsPassive() {
+		return true
+	}
 	if r.Provider != Claude || len(r.Scopes) == 0 {
 		return false
 	}
@@ -75,6 +78,7 @@ type IndexEntry struct {
 	Org      string   `json:"org,omitempty"`
 	OrgName  string   `json:"orgName,omitempty"`
 	Provider Provider `json:"provider"`
+	PlanType string   `json:"planType,omitempty"` // non-secret plan tier for passive providers
 	AddedAt  string   `json:"addedAt,omitempty"`
 }
 
@@ -113,7 +117,7 @@ func (c *Config) LoadIndex() (*Index, error) {
 func (c *Config) fillMissingOrgs(idx *Index) {
 	changed := false
 	for _, e := range idx.Accounts {
-		if e.Org != "" {
+		if e.Org != "" || e.Provider.IsPassive() {
 			continue
 		}
 		oldKey := storeKey(e.Provider, e.Email, "")
@@ -201,10 +205,18 @@ func (c *Config) tokenDelete(key string) error {
 	})
 }
 
-// LoadRecords joins the index with the stored tokens.
+// LoadRecords joins the index with the stored tokens. Passive providers (such as
+// Antigravity) store no tokens and never touch the Keychain or token file.
 func (c *Config) LoadRecords(idx *Index) ([]*Record, error) {
+	hasTokenAccounts := false
+	for _, e := range idx.Accounts {
+		if !e.Provider.IsPassive() {
+			hasTokenAccounts = true
+			break
+		}
+	}
 	var vault *keychainVault
-	if c.UseKeychain && len(idx.Accounts) > 0 {
+	if c.UseKeychain && hasTokenAccounts {
 		var err error
 		vault, err = c.loadKeychainVault()
 		if err != nil {
@@ -213,6 +225,18 @@ func (c *Config) LoadRecords(idx *Index) ([]*Record, error) {
 	}
 	out := make([]*Record, 0, len(idx.Accounts))
 	for _, e := range idx.Accounts {
+		if e.Provider.IsPassive() {
+			out = append(out, &Record{
+				Provider: e.Provider,
+				Email:    e.Email,
+				Label:    e.Label,
+				OrgUUID:  e.Org,
+				OrgName:  e.OrgName,
+				PlanType: e.PlanType,
+				Source:   "statusline",
+			})
+			continue
+		}
 		key := storeKey(e.Provider, e.Email, e.Org)
 		var r *Record
 		if vault != nil {

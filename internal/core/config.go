@@ -23,35 +23,54 @@ var Version = "dev"
 type Provider string
 
 const (
-	Claude Provider = "claude"
-	Codex  Provider = "codex"
+	Claude      Provider = "claude"
+	Codex       Provider = "codex"
+	Antigravity Provider = "antigravity"
 )
 
 // Providers lists every provider in display order.
-var Providers = []Provider{Claude, Codex}
+var Providers = []Provider{Claude, Codex, Antigravity}
+
+// IsPassive reports whether a provider is tracked passively (e.g. via a CLI hook)
+// without storing OAuth credentials or switching logins.
+func (p Provider) IsPassive() bool {
+	return p == Antigravity
+}
 
 // Name is the provider's product name.
 func (p Provider) Name() string {
-	if p == Codex {
+	switch p {
+	case Codex:
 		return "Codex"
+	case Antigravity:
+		return "Antigravity"
+	default:
+		return "Claude"
 	}
-	return "Claude"
 }
 
 // Client is the CLI that holds the provider's login.
 func (p Provider) Client() string {
-	if p == Codex {
+	switch p {
+	case Codex:
 		return "Codex"
+	case Antigravity:
+		return "Antigravity CLI"
+	default:
+		return "Claude Code"
 	}
-	return "Claude Code"
 }
 
 // Glyph tells the providers apart without colour.
 func (p Provider) Glyph() string {
-	if p == Codex {
+	switch p {
+	case Codex:
 		return "⬢"
+	case Antigravity:
+		return "✦"
+	default:
+		return "✳"
 	}
-	return "✳"
 }
 
 // ParseProvider maps user input to a provider; anything unrecognised is ok=false.
@@ -61,6 +80,8 @@ func ParseProvider(s string) (Provider, bool) {
 		return Claude, true
 	case "codex":
 		return Codex, true
+	case "antigravity", "agy":
+		return Antigravity, true
 	}
 	return "", false
 }
@@ -116,8 +137,9 @@ type Config struct {
 	ClaudeDir          string // where Claude Code keeps its login (.credentials.json off macOS)
 	ClaudeService      string // Claude Code's keychain service
 	ClaudeGlobalConfig string // .claude.json with the cached oauthAccount block
-	CodexHome          string
-	CodexBinary        string // optional executable override; otherwise discover Codex
+	CodexHome       string
+	CodexBinary     string // optional executable override; otherwise discover Codex
+	AgySettingsFile string // ~/.gemini/antigravity-cli/settings.json for statusLine hook setup
 	// Budgets for the graceful and forcing `daemon restart` attempts; zero uses
 	// the defaults in codex_daemon.go.
 	CodexRestartWait time.Duration
@@ -150,8 +172,9 @@ func DefaultConfig() *Config {
 		UseDPAPI:     runtime.GOOS == "windows" && os.Getenv("AIU_STORE") != "file",
 		StoreService: "aiu",
 
-		CodexHome:   envOr("CODEX_HOME", filepath.Join(home, ".codex")),
-		CodexBinary: os.Getenv("AIU_CODEX_BIN"),
+		CodexHome:       envOr("CODEX_HOME", filepath.Join(home, ".codex")),
+		CodexBinary:     os.Getenv("AIU_CODEX_BIN"),
+		AgySettingsFile: envOr("AIU_AGY_SETTINGS", filepath.Join(home, ".gemini", "antigravity-cli", "settings.json")),
 
 		ClaudeUsageURL:            "https://api.anthropic.com/api/oauth/usage",
 		ClaudeProfileURL:          "https://api.anthropic.com/api/oauth/profile",

@@ -1,9 +1,10 @@
 # AIU
 
-Rate limits and reset times for several **Claude** (Pro/Max) and **ChatGPT/Codex** accounts in one place — as a CLI and a Liquid Glass Mac app with an optional menu bar icon on macOS 26.
+Rate limits and reset times for **Claude** (Pro/Max), **ChatGPT/Codex**, and **Google Antigravity (`agy`)** accounts in one place — as a CLI and a Liquid Glass Mac app with an optional menu bar icon on macOS 26.
 
-- Live 5-hour and weekly windows per account, straight from the endpoints `/usage` and `/status` use.
-- Keeps its own copy of each account's login, so signing Claude Code or Codex into another account never loses one.
+- Live 5-hour and weekly windows per Claude and Codex account, straight from the endpoints `/usage` and `/status` use.
+- **ToS-safe Antigravity (`agy`) tracking:** reads quota snapshots via Antigravity CLI's official `statusLine` hook (`aiu add --agy`). AIU never stores Google OAuth tokens, calls undocumented Google endpoints, or switches Antigravity accounts.
+- Keeps its own copy of each Claude and Codex account's login, so signing Claude Code or Codex into another account never loses one.
 - `aiu switch` points Claude Code or Codex's saved login at any tracked account. Running Claude Code sessions follow within about 30 seconds. AIU restarts a running Codex daemon so connected terminals can reconnect with the selected account.
 
 > **Unofficial, and read this before signing in with a Claude subscription.** AIU is not affiliated with, endorsed by, or supported by Anthropic or OpenAI. It uses internal, undocumented endpoints and the same OAuth clients as Claude Code and the Codex CLI; either company can change or block that at any time.
@@ -61,9 +62,11 @@ icon remains available when the Dock icon is hidden.
 ```sh
 aiu add                        # track the account Claude Code is signed in to
 aiu add --codex                # track the account Codex is signed in to
+aiu add --agy                  # enable Antigravity CLI's official statusLine hook (read-only)
 aiu login --label work         # browser sign-in for another Claude account
 aiu login --codex              # …or another ChatGPT account
 aiu                            # all accounts, all windows, reset times
+aiu --agy                      # Antigravity accounts only
 aiu watch                      # live view
 aiu switch work                # point Claude Code at a tracked account
 aiu switch codex:alt           # same for Codex

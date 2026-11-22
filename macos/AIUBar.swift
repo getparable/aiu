@@ -347,11 +347,15 @@ final class Store {
     }
 
     func track(_ provider: Provider, label: String) async {
-        var args = ["add"] + (provider == .codex ? ["--codex"] : [])
+        var args = ["add", "--provider", provider.rawValue]
         if !label.isEmpty { args += ["--label", label] }
         let result = await CLI.run(args)
         if result.status == 0 {
-            flash("Tracking \(provider.client)'s current account")
+            if provider == .antigravity {
+                flash("Antigravity CLI statusLine hook enabled")
+            } else {
+                flash("Tracking \(provider.client)'s current account")
+            }
             await refresh()
         } else {
             lastError = result.message
@@ -429,7 +433,7 @@ final class Store {
     /// private window when the browser is signed in to another account.
     func beginLogin(_ provider: Provider, label: String, account: Account? = nil) {
         cancelLogin()
-        var args = ["login", "--no-open"] + (provider == .codex ? ["--codex"] : [])
+        var args = ["login", "--no-open", "--provider", provider.rawValue]
         if let account { args += [account.id] }
         if !label.isEmpty { args += ["--label", label] }
         let process = CLI.makeProcess(args)
@@ -603,8 +607,9 @@ struct WindowRow: View {
             Text(window.shortLabel)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .frame(width: 44, alignment: .leading)
+                .frame(width: 64, alignment: .leading)
                 .lineLimit(1)
+                .minimumScaleFactor(0.85)
             UsageBar(percent: window.percent)
             Text("\(Int(window.percent.rounded()))%")
                 .font(.caption.weight(window.percent >= 80 ? .bold : .medium))
@@ -687,7 +692,7 @@ struct AccountBody: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
             }
-            if account.needsLogin {
+            if account.needsLogin && account.kind.supportsLogin {
                 Button("Relink with browser", systemImage: "globe") {
                     store.beginLogin(account.kind, label: "", account: account)
                 }
@@ -703,10 +708,12 @@ struct AccountBody: View {
                 Button("Switch \(account.kind.client) to This Account") { Task { await store.switchTo(account) } }
                     .disabled(store.switching)
             }
-            Button("Relink with Browser…", systemImage: "globe") {
-                store.beginLogin(account.kind, label: "", account: account)
+            if account.kind.supportsLogin {
+                Button("Relink with Browser…", systemImage: "globe") {
+                    store.beginLogin(account.kind, label: "", account: account)
+                }
+                .disabled(store.loginProvider != nil)
             }
-            .disabled(store.loginProvider != nil)
             if let resets = account.bankedResets {
                 Button {
                     showingBankedResets = true
@@ -925,21 +932,30 @@ struct SummaryCard: View {
     private func row(_ provider: Provider) -> some View {
         let active = store.group(provider).first(where: \.active)
         let best = store.recommended(provider)
+        let summaryAccount = active ?? best ?? store.headline(provider)
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 LogoView(provider: provider, size: 13)
-                switcher(provider, active: active)
+                if provider.supportsSwitch {
+                    switcher(provider, active: active)
+                } else {
+                    Text(summaryAccount?.label ?? provider.name)
+                        .font(.system(.body, weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help("Read-only via \(provider.client) statusLine")
+                }
                 Spacer(minLength: 4)
-                if let account = active ?? best {
+                if let account = summaryAccount {
                     Text("\(Int(account.tightest.rounded()))%")
                         .font(.title3.weight(.semibold))
                         .monospacedDigit()
                         .foregroundStyle(account.tightest >= 80 ? .primary : .secondary)
                 }
             }
-            if let active {
+            if let display = active ?? (!provider.supportsSwitch ? summaryAccount : nil) {
                 TimelineView(.everyMinute) { context in
-                    Text(limitText(active, now: context.date))
+                    Text(limitText(display, now: context.date))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -1075,35 +1091,55 @@ struct AddAccountView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
 
-                TextField("Label (optional)", text: $label)
-                    .textFieldStyle(.roundedBorder)
+                if provider.supportsLogin {
+                    TextField("Label (optional)", text: $label)
+                        .textFieldStyle(.roundedBorder)
 
-                Button {
-                    store.beginLogin(provider, label: label)
-                } label: {
-                    Label("Sign in with browser", systemImage: "globe")
-                        .fontWeight(.semibold)
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.glass)
-                .controlSize(.large)
-
-                Button {
-                    Task {
-                        await store.track(provider, label: label)
-                        close()
+                    Button {
+                        store.beginLogin(provider, label: label)
+                    } label: {
+                        Label("Sign in with browser", systemImage: "globe")
+                            .fontWeight(.semibold)
+                            .frame(maxWidth: .infinity)
                     }
-                } label: {
-                    Label("Track \(provider.client)'s current login", systemImage: "arrow.down.circle")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.glass)
-                .controlSize(.large)
+                    .buttonStyle(.glass)
+                    .controlSize(.large)
 
-                Text("Tip: prefer tracking the account \(provider.client) already uses. For another account, copy the sign-in link into a private window.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .wrapsVertically()
+                    Button {
+                        Task {
+                            await store.track(provider, label: label)
+                            close()
+                        }
+                    } label: {
+                        Label("Track \(provider.client)'s current login", systemImage: "arrow.down.circle")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.glass)
+                    .controlSize(.large)
+
+                    Text("Tip: prefer tracking the account \(provider.client) already uses. For another account, copy the sign-in link into a private window.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .wrapsVertically()
+                } else {
+                    Button {
+                        Task {
+                            await store.track(provider, label: "")
+                            close()
+                        }
+                    } label: {
+                        Label("Enable \(provider.client) hook", systemImage: "waveform.path.ecg")
+                            .fontWeight(.semibold)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.glass)
+                    .controlSize(.large)
+
+                    Text("Configures agy's official statusLine hook in ~/.gemini/antigravity-cli/settings.json. Read-only: no Google credentials are stored or switched, and quota updates automatically while agy runs.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .wrapsVertically()
+                }
             }
         }
         .padding(14)

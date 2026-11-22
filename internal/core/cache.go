@@ -27,8 +27,9 @@ type cacheEntry struct {
 }
 
 const (
-	machineKey = "$machine"
-	profileKey = "$profile"
+	machineKey   = "$machine"
+	profileKey   = "$profile"
+	agyActiveKey = "$agy_active"
 )
 
 var errLocked = errors.New("the usage cache is locked by another process")

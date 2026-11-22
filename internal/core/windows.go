@@ -84,6 +84,9 @@ func NormalizeWindows(raw json.RawMessage, now time.Time) []Window {
 	if json.Unmarshal(raw, &body) != nil {
 		return nil
 	}
+	if str(body["source"]) == agyUsageSource || obj(body["quota"]) != nil {
+		return agyWindows(body, now)
+	}
 	if _, hasLimits := body["limits"].([]any); !hasLimits {
 		if _, ok := body["rate_limit"]; ok {
 			return codexWindows(body, now)
@@ -228,6 +231,201 @@ func codexWindows(body map[string]any, now time.Time) []Window {
 	return out
 }
 
+// agyWindows normalizes Antigravity CLI's statusLine quota map into AIU windows.
+// Buckets carrying remaining_fraction (0..1) become percentage-used windows;
+// buckets carrying only remaining_amount (e.g. AI Credits) are left to AgyCreditsOf.
+func agyWindows(body map[string]any, now time.Time) []Window {
+	quota := obj(body["quota"])
+	if len(quota) == 0 {
+		return nil
+	}
+	fetchedAt, _ := time.Parse(time.RFC3339Nano, str(body["fetched_at"]))
+	type entry struct {
+		key   string
+		group string
+		w     Window
+	}
+	var items []entry
+	for key, rawBucket := range quota {
+		b := obj(rawBucket)
+		if b == nil {
+			continue
+		}
+		frac, hasFrac := num(b["remaining_fraction"])
+		if !hasFrac || math.IsNaN(frac) {
+			continue
+		}
+		if frac < 0 {
+			frac = 0
+		} else if frac > 1 {
+			frac = 1
+		}
+		usedPct := math.Round((1-frac)*10000) / 100
+		if usedPct < 0 {
+			usedPct = 0
+		} else if usedPct > 100 {
+			usedPct = 100
+		}
+
+		group := agyBucketGroup(key, b, fetchedAt)
+		label := agyBucketLabel(key, group)
+		resetAt, hasReset := agyBucketResetTime(b, fetchedAt)
+		disabled, _ := b["disabled"].(bool)
+
+		w := Window{
+			Key:     key,
+			Group:   group,
+			Label:   label,
+			Percent: usedPct,
+			Known:   true,
+		}
+		if hasReset {
+			if !resetAt.After(now) {
+				// Window rolled over since the last passive statusLine reading.
+				w.Percent = 0
+			} else {
+				w.ResetsAt = resetAt.UTC().Format(time.RFC3339)
+			}
+		}
+		if disabled {
+			w.Severity = "locked"
+		} else {
+			w.Severity = severityTag(w.Percent)
+		}
+		items = append(items, entry{key: key, group: group, w: w})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		gi, gj := 1, 1
+		if items[i].group == "session" {
+			gi = 0
+		}
+		if items[j].group == "session" {
+			gj = 0
+		}
+		if gi != gj {
+			return gi < gj
+		}
+		// Put Gemini buckets ahead of partner/other model buckets within a group.
+		gemi := strings.Contains(strings.ToLower(items[i].key), "gemini")
+		gemj := strings.Contains(strings.ToLower(items[j].key), "gemini")
+		if gemi != gemj {
+			return gemi
+		}
+		return items[i].key < items[j].key
+	})
+	out := make([]Window, len(items))
+	for i, it := range items {
+		out[i] = it.w
+	}
+	return out
+}
+
+func agyBucketGroup(key string, b map[string]any, fetchedAt time.Time) string {
+	lower := strings.ToLower(key)
+	switch {
+	case strings.Contains(lower, "5h"),
+		strings.Contains(lower, "5-h"),
+		strings.Contains(lower, "5_h"),
+		strings.Contains(lower, "five_hour"),
+		strings.Contains(lower, "five-hour"),
+		strings.Contains(lower, "session"),
+		strings.Contains(lower, "hourly"),
+		strings.Contains(lower, "short"):
+		return "session"
+	case strings.Contains(lower, "week"),
+		strings.Contains(lower, "7d"),
+		strings.Contains(lower, "7-d"),
+		strings.Contains(lower, "7_d"),
+		strings.Contains(lower, "seven_day"),
+		strings.Contains(lower, "seven-day"):
+		return "weekly"
+	}
+	if secs, ok := num(b["reset_in_seconds"]); ok && secs > 0 {
+		if secs <= 24*3600 {
+			return "session"
+		}
+		return "weekly"
+	}
+	if at, ok := agyBucketResetTime(b, fetchedAt); ok && !fetchedAt.IsZero() {
+		if at.Sub(fetchedAt) <= 24*time.Hour {
+			return "session"
+		}
+	}
+	return "weekly"
+}
+
+func agyBucketLabel(key, group string) string {
+	prefix := "7d"
+	defaultName := "all"
+	if group == "session" {
+		prefix = "5h"
+		defaultName = "session"
+	}
+	tokens := strings.FieldsFunc(strings.ToLower(key), func(r rune) bool {
+		return r == '-' || r == '_' || r == ':' || r == '/' || r == ' '
+	})
+	var kept []string
+	for _, t := range tokens {
+		switch t {
+		case "", "5h", "5", "h", "hour", "hours", "five", "session", "hourly", "short",
+			"7d", "7", "d", "day", "days", "seven", "week", "weekly", "quota", "limit":
+			continue
+		case "gpt":
+			kept = append(kept, "GPT")
+		case "ai":
+			kept = append(kept, "AI")
+		default:
+			kept = append(kept, strings.ToUpper(t[:1])+t[1:])
+		}
+	}
+	if len(kept) == 0 {
+		return prefix + " " + defaultName
+	}
+	return prefix + " " + strings.Join(kept, " ")
+}
+
+// AgyCreditBalance is a non-fractional remaining_amount bucket (such as AI Credits)
+// reported by Antigravity CLI's statusLine payload.
+type AgyCreditBalance struct {
+	Key       string
+	Label     string
+	Remaining float64
+}
+
+// AgyCreditsOf extracts remaining_amount buckets (without remaining_fraction) from
+// an Antigravity usage payload.
+func AgyCreditsOf(raw json.RawMessage) []AgyCreditBalance {
+	var body map[string]any
+	if json.Unmarshal(raw, &body) != nil {
+		return nil
+	}
+	quota := obj(body["quota"])
+	if len(quota) == 0 {
+		return nil
+	}
+	var out []AgyCreditBalance
+	for key, rawBucket := range quota {
+		b := obj(rawBucket)
+		if b == nil {
+			continue
+		}
+		if _, hasFrac := num(b["remaining_fraction"]); hasFrac {
+			continue
+		}
+		amt, hasAmt := num(b["remaining_amount"])
+		if !hasAmt || math.IsNaN(amt) {
+			continue
+		}
+		label := strings.ReplaceAll(strings.ReplaceAll(key, "_", " "), "-", " ")
+		if strings.Contains(strings.ToLower(key), "credit") {
+			label = "AI credits"
+		}
+		out = append(out, AgyCreditBalance{Key: key, Label: label, Remaining: amt})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out
+}
+
 func severityTag(p float64) string {
 	if s := SeverityFor(p); s != "ok" {
 		return s
@@ -265,6 +463,16 @@ type LoginHealth struct {
 // HealthOf reports a result's login state.
 func HealthOf(res *Result, now time.Time) LoginHealth {
 	r := res.Record
+	if r.Provider.IsPassive() {
+		if res.FetchedAt > 0 {
+			age := now.Sub(msToTime(res.FetchedAt))
+			if age < time.Minute {
+				return LoginHealth{"ok", "updated just now via agy"}
+			}
+			return LoginHealth{"ok", "updated " + FormatRelative(age) + " ago via agy"}
+		}
+		return LoginHealth{"ok", "tracked via agy statusLine"}
+	}
 	switch {
 	case r.Missing:
 		return LoginHealth{"missing", "no stored token — sign in again"}
@@ -303,8 +511,29 @@ func DistinctOrgName(r *Record) string {
 
 var tierPattern = regexp.MustCompile(`(?i)(pro|max)_?(\d+x)?`)
 
-// TierLabel is the plan name, e.g. "Max 20x" or "ChatGPT Pro".
+// TierLabel is the plan name, e.g. "Max 20x", "ChatGPT Pro", or "Google AI Pro".
 func TierLabel(r *Record) string {
+	if r.Provider == Antigravity {
+		plan := strings.TrimSpace(r.PlanType)
+		if plan == "" {
+			return ""
+		}
+		lower := strings.ToLower(plan)
+		if strings.HasPrefix(lower, "google ") || strings.HasPrefix(lower, "gemini ") {
+			return plan
+		}
+		names := map[string]string{
+			"free":       "Google AI Free",
+			"plus":       "Google AI Plus",
+			"pro":        "Google AI Pro",
+			"ultra":      "Google AI Ultra",
+			"enterprise": "Gemini Enterprise",
+		}
+		if n := names[lower]; n != "" {
+			return n
+		}
+		return "Google AI " + strings.ToUpper(plan[:1]) + plan[1:]
+	}
 	if r.Provider == Codex {
 		names := map[string]string{"free": "Free", "plus": "Plus", "pro": "Pro", "team": "Team", "business": "Business", "enterprise": "Enterprise", "edu": "Edu"}
 		plan := strings.ToLower(r.PlanType)

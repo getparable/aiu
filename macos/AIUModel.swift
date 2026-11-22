@@ -143,11 +143,31 @@ struct Account: Decodable, Identifiable, Hashable {
 }
 
 enum Provider: String, CaseIterable, Identifiable {
-    case claude, codex
+    case claude, codex, antigravity
     var id: String { rawValue }
-    var name: String { self == .claude ? "Claude" : "Codex" }
-    var client: String { self == .claude ? "Claude Code" : "Codex" }
-    var logoResource: String { self == .claude ? "claude" : "openai" }
+    var name: String {
+        switch self {
+        case .claude: "Claude"
+        case .codex: "Codex"
+        case .antigravity: "Antigravity"
+        }
+    }
+    var client: String {
+        switch self {
+        case .claude: "Claude Code"
+        case .codex: "Codex"
+        case .antigravity: "Antigravity CLI"
+        }
+    }
+    var logoResource: String {
+        switch self {
+        case .claude: "claude"
+        case .codex: "openai"
+        case .antigravity: "antigravity"
+        }
+    }
+    var supportsSwitch: Bool { self != .antigravity }
+    var supportsLogin: Bool { self != .antigravity }
 }
 
 /// One decoder for everything the Go side prints. Its timestamps are RFC 3339 — with
