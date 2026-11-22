@@ -17,8 +17,9 @@ aiu frontend switch claude:person@example.test#organization --contract-version 1
 
 Commands are `status`, `add`, `login`, `switch`, `remove`, `sync`, `resets`,
 `reset`, and `auto-reset`.
-`--provider claude|codex` narrows provider selection. `switch` and `remove`
+`--provider claude|codex|agy` (`antigravity` is the canonical provider name; `agy` is an alias) narrows provider selection. `switch` and `remove`
 require one full account selector; append `#` even for an empty organization.
+`antigravity` accounts are passively tracked via Antigravity CLI's official `statusLine` hook: `add --provider agy` configures the hook (without storing credentials), and `antigravity` rows always report `readOnly: true` and `canSwitch: false`.
 `--label` applies to import/login. Browser login is supported; use the normal
 terminal `login --manual` for manual Claude authorization. `--no-open` is intended
 for controlled tests; the contract deliberately never emits the authorization URL.

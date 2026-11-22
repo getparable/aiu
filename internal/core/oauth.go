@@ -348,6 +348,9 @@ func (c *Config) BeginLogin(opts LoginOptions) (*LoginSession, error) {
 		target = entry
 		opts.Provider = entry.Provider
 	}
+	if opts.Provider.IsPassive() {
+		return nil, fmt.Errorf("%s is tracked passively via %s's statusLine hook (no OAuth credentials stored) — run `aiu add --agy` instead", opts.Provider.Name(), opts.Provider.Client())
+	}
 	verifier, challenge, state := pkce()
 	s := &LoginSession{Provider: opts.Provider, verifier: verifier, state: state, Manual: opts.Manual, target: target}
 

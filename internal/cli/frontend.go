@@ -180,9 +180,22 @@ func frontendCommand(ctx context.Context, cfg *core.Config, opts *options, comma
 		return "status complete", ctx.Err()
 	case "add":
 		var err error
-		if opts.provider == core.Codex {
+		switch opts.provider {
+		case core.Codex:
 			_, err = cfg.CaptureCodex(ctx, opts.label)
-		} else {
+		case core.Antigravity:
+			st, setupErr := cfg.SetupAgyStatusLine(resolveAiuHookBinary())
+			if setupErr != nil {
+				return "", setupErr
+			}
+			if st.CustomExisting {
+				return "", errors.New("Antigravity CLI already has a custom statusLine command (" + st.ExistingCommand + "); add `aiu hook agy` to your script instead of overwriting it")
+			}
+			if st.AlreadyConfigured {
+				return "Antigravity CLI statusLine hook already enabled", nil
+			}
+			return "Antigravity CLI statusLine hook enabled — usage updates while agy runs", nil
+		default:
 			_, err = cfg.CaptureClaudeCode(ctx, opts.label)
 		}
 		if err != nil {
@@ -261,10 +274,10 @@ func frontendSync(ctx context.Context, cfg *core.Config, opts *options) error {
 	if e != nil {
 		return e
 	}
-	if opts.provider != core.Codex {
+	if opts.provider == "" || opts.provider == core.Claude {
 		_, _, rs = cfg.SyncClaude(ctx, rs, true)
 	}
-	if opts.provider != core.Claude {
+	if opts.provider == "" || opts.provider == core.Codex {
 		_, _, _ = cfg.SyncCodex(rs, true)
 	}
 	return ctx.Err()

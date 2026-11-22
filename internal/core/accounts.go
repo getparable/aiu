@@ -97,18 +97,35 @@ func (c *Config) persistAccountFor(ctx context.Context, working *Record, label, 
 	if err := c.tokenSet(key, &rec); err != nil {
 		return nil, err
 	}
-	if existing != nil {
-		existing.Label, existing.Org, existing.OrgName = label, org, firstNonEmpty(orgName, existing.OrgName)
-	} else {
-		idx.Accounts = append(idx.Accounts, &IndexEntry{
-			Email: email, Label: label, Org: org, OrgName: orgName,
-			Provider: working.Provider, AddedAt: time.Now().UTC().Format(time.RFC3339),
-		})
-	}
-	if err := c.saveIndex(idx); err != nil {
+	isNew := existing == nil
+	if err := withFileLock(c.indexLockFile(), func() error {
+		latest, err := c.LoadIndex()
+		if err != nil {
+			return err
+		}
+		var cur *IndexEntry
+		for _, e := range latest.Accounts {
+			if e.Email == email && e.Provider == working.Provider && e.Org == org {
+				cur = e
+			}
+		}
+		if target != nil && cur == nil {
+			return errors.New("the account was removed while signing in; add it again to track it")
+		}
+		isNew = cur == nil
+		if cur != nil {
+			cur.Label, cur.Org, cur.OrgName = label, org, firstNonEmpty(orgName, cur.OrgName)
+		} else {
+			latest.Accounts = append(latest.Accounts, &IndexEntry{
+				Email: email, Label: label, Org: org, OrgName: orgName,
+				Provider: working.Provider, AddedAt: time.Now().UTC().Format(time.RFC3339),
+			})
+		}
+		return c.saveIndex(latest)
+	}); err != nil {
 		return nil, err
 	}
-	return &SavedAccount{Record: &rec, IsNew: existing == nil}, nil
+	return &SavedAccount{Record: &rec, IsNew: isNew}, nil
 }
 
 // CaptureClaudeCode adds the account Claude Code is signed in as, sharing its token
@@ -272,16 +289,18 @@ func slug(name string) string {
 	return strings.Trim(nonWord.ReplaceAllString(strings.ToLower(name), "-"), "-")
 }
 
-var prefixed = regexp.MustCompile(`(?i)^(claude|codex):(.+)$`)
+var prefixed = regexp.MustCompile(`(?i)^(claude|codex|antigravity|agy):(.+)$`)
 
-// FindAccount resolves an email or label. A claude:/codex: prefix (or provider)
+// FindAccount resolves an email or label. A claude:/codex:/agy: prefix (or provider)
 // narrows the search; a name tracked for both providers is an error, not a guess.
 // The full key a listing prints — provider:email#organization — also resolves, which
 // is what front ends pass when one address holds several organizations.
 func (c *Config) FindAccount(target string, provider Provider) (*Index, *IndexEntry, error) {
 	name := target
 	if m := prefixed.FindStringSubmatch(target); m != nil {
-		provider, name = Provider(strings.ToLower(m[1])), m[2]
+		if p, ok := ParseProvider(strings.ToLower(m[1])); ok {
+			provider, name = p, m[2]
+		}
 	}
 	name, org, hasOrg := strings.Cut(name, "#")
 	idx, err := c.LoadIndex()
@@ -308,7 +327,7 @@ func (c *Config) FindAccount(target string, provider Provider) (*Index, *IndexEn
 			for i, e := range found {
 				names[i] = e.Label + " → " + e.Describe()
 			}
-			return nil, fmt.Errorf("%q matches %d accounts (%s) — use the label, or claude:/codex:", name, len(found), strings.Join(names, ", "))
+			return nil, fmt.Errorf("%q matches %d accounts (%s) — use the label, or claude:/codex:/agy:", name, len(found), strings.Join(names, ", "))
 		}
 		if len(found) == 1 {
 			return found[0], nil
@@ -330,7 +349,7 @@ func (c *Config) FindAccount(target string, provider Provider) (*Index, *IndexEn
 
 // RemoveAccount forgets an account: its tokens, its index entry and its cached usage.
 func (c *Config) RemoveAccount(target string, provider Provider) (*IndexEntry, error) {
-	idx, e, err := c.FindAccount(target, provider)
+	_, e, err := c.FindAccount(target, provider)
 	if err != nil {
 		return nil, err
 	}
@@ -349,20 +368,35 @@ func (c *Config) RemoveAccount(target string, provider Provider) (*IndexEntry, e
 			return nil, err
 		}
 	}
-	if err := c.tokenDelete(key); err != nil {
-		return nil, err
-	}
-	kept := idx.Accounts[:0]
-	for _, a := range idx.Accounts {
-		if a != e {
-			kept = append(kept, a)
+	if !e.Provider.IsPassive() {
+		if err := c.tokenDelete(key); err != nil {
+			return nil, err
 		}
 	}
-	idx.Accounts = kept
-	if err := c.saveIndex(idx); err != nil {
+	if err := withFileLock(c.indexLockFile(), func() error {
+		latest, err := c.LoadIndex()
+		if err != nil {
+			return err
+		}
+		kept := latest.Accounts[:0]
+		for _, a := range latest.Accounts {
+			if a.Provider == e.Provider && a.Email == e.Email && a.Org == e.Org {
+				continue
+			}
+			kept = append(kept, a)
+		}
+		latest.Accounts = kept
+		if e.Provider == Antigravity {
+			addIgnoredAgy(latest, e.Email)
+		}
+		return c.saveIndex(latest)
+	}); err != nil {
 		return nil, err
 	}
 	c.cacheDelete(storeKey(e.Provider, e.Email, e.Org))
+	if e.Provider == Antigravity && c.AgyActiveEmail() == e.Email {
+		c.cacheDelete(agyActiveKey)
+	}
 	return e, nil
 }
 
@@ -388,6 +422,9 @@ func (c *Config) DescribeLive(ctx context.Context, verify bool) (map[Provider]*L
 	if live := c.ReadCodexAuth(); live != nil {
 		id := live.identity()
 		out[Codex] = &LiveMatch{Email: id.Email, Org: id.AccountID, Verified: id.Email != ""}
+	}
+	if email := c.AgyActiveEmail(); email != "" {
+		out[Antigravity] = &LiveMatch{Email: email, Verified: true}
 	}
 	return out, nil
 }
@@ -432,6 +469,10 @@ func (c *Config) SwitchAccount(ctx context.Context, target string, provider Prov
 		return false
 	}
 	res := &SwitchResult{Entry: e}
+
+	if e.Provider.IsPassive() {
+		return nil, fmt.Errorf("%s is tracked read-only via %s statusLine and cannot be switched by aiu — use /logout in agy to switch accounts", e.Describe(), e.Provider.Client())
+	}
 
 	if e.Provider == Codex {
 		// Serialize saving credentials and restarting across CLI/app switches.

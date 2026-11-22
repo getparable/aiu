@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -96,10 +97,14 @@ func parse(argv []string) (*options, error) {
 			if o.provider == "" {
 				o.provider = core.Provider(key)
 			}
+		case "agy", "antigravity":
+			if o.provider == "" {
+				o.provider = core.Antigravity
+			}
 		case "provider":
 			p, ok := core.ParseProvider(strings.ToLower(value))
 			if !ok {
-				return nil, fmt.Errorf("unknown provider %q — use claude or codex", value)
+				return nil, fmt.Errorf("unknown provider %q — use claude, codex, or agy", value)
 			}
 			o.provider = p
 		case "label":
@@ -145,6 +150,7 @@ type app struct {
 	cfg    *core.Config
 	opts   *options
 	p      painter
+	stdin  io.Reader
 	stdout io.Writer
 	stderr io.Writer
 }
@@ -170,7 +176,7 @@ func run(argv []string, cfg *core.Config) int {
 		return runFrontend(opts, cfg, os.Stdin, os.Stdout)
 	}
 	colour := !opts.noColor && os.Getenv("NO_COLOR") == "" && isTerminal(os.Stdout)
-	a := &app{cfg: cfg, opts: opts, p: painter{on: colour}, stdout: os.Stdout, stderr: os.Stderr}
+	a := &app{cfg: cfg, opts: opts, p: painter{on: colour}, stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr}
 	a.cfg.Warn = func(m string) { fmt.Fprintln(a.stderr, a.p.yellow("warn: "+core.Redact(m))) }
 	a.cfg.Info = func(m string) {
 		if !opts.json {
@@ -183,6 +189,7 @@ func run(argv []string, cfg *core.Config) int {
 	}
 	commands := map[string]func(context.Context) error{
 		"status": a.status, "watch": a.watch, "login": a.login, "add": a.add,
+		"hook": a.hook,
 		"list": a.list, "ls": a.list, "remove": a.remove, "rm": a.remove,
 		"sync": a.sync, "switch": a.switchTo, "use": a.switchTo, "whoami": a.whoami,
 		"link":             a.link,
@@ -321,7 +328,70 @@ func (a *app) reportSaved(s *core.SavedAccount) {
 	}
 }
 
+func resolveAiuHookBinary() string {
+	if env := strings.TrimSpace(os.Getenv("AIU_HOOK_BIN")); env != "" {
+		return env
+	}
+	home, _ := os.UserHomeDir()
+	exe, _ := os.Executable()
+	return resolveAiuHookBinaryFrom(home, exe, func(p string) bool {
+		st, err := os.Stat(p)
+		return err == nil && !st.IsDir()
+	})
+}
+
+// resolveAiuHookBinaryFrom selects an upgrade-stable path to `aiu` for external
+// CLI hooks, avoiding versioned Homebrew Cellar paths that break on upgrade.
+func resolveAiuHookBinaryFrom(home, exe string, exists func(string) bool) string {
+	if home != "" {
+		if exists(filepath.Join(home, ".local", "bin", "aiu")) {
+			return "~/.local/bin/aiu"
+		}
+	}
+	// If running from a versioned Homebrew Cellar bundle (e.g.
+	// /opt/homebrew/Cellar/aiu/0.4.0/AIU.app/Contents/MacOS/aiu), prefer the
+	// stable Homebrew bin or opt symlink instead.
+	if exe != "" {
+		norm := filepath.ToSlash(exe)
+		if idx := strings.Index(norm, "/Cellar/aiu/"); idx > 0 {
+			prefix := norm[:idx]
+			for _, candidate := range []string{
+				filepath.FromSlash(prefix + "/bin/aiu"),
+				filepath.FromSlash(prefix + "/opt/aiu/AIU.app/Contents/MacOS/aiu"),
+			} {
+				if exists(candidate) {
+					return candidate
+				}
+			}
+		}
+	}
+	for _, candidate := range []string{
+		"/opt/homebrew/bin/aiu",
+		"/usr/local/bin/aiu",
+	} {
+		if exists(candidate) {
+			return candidate
+		}
+	}
+	if home != "" {
+		appBin := filepath.Join(home, "Applications", "AIU.app", "Contents", "MacOS", "aiu")
+		if exists(appBin) {
+			return "~/Applications/AIU.app/Contents/MacOS/aiu"
+		}
+	}
+	if exists("/Applications/AIU.app/Contents/MacOS/aiu") {
+		return "/Applications/AIU.app/Contents/MacOS/aiu"
+	}
+	if exe != "" {
+		return exe
+	}
+	return "aiu"
+}
+
 func (a *app) add(ctx context.Context) error {
+	if a.provider() == core.Antigravity {
+		return a.addAgy()
+	}
 	var s *core.SavedAccount
 	var err error
 	if a.provider() == core.Codex {
@@ -334,6 +404,49 @@ func (a *app) add(ctx context.Context) error {
 	}
 	a.reportSaved(s)
 	return nil
+}
+
+func (a *app) addAgy() error {
+	bin := resolveAiuHookBinary()
+	st, err := a.cfg.SetupAgyStatusLine(bin)
+	if err != nil {
+		return err
+	}
+	if st.CustomExisting {
+		fmt.Fprintf(a.stdout, "%s %s already has a custom statusLine command (%s) — left untouched\n",
+			a.p.yellow("!"), st.SettingsPath, st.ExistingCommand)
+		fmt.Fprintln(a.stdout, a.p.dim("   to keep your renderer and feed Antigravity usage into aiu, wrap both with:"))
+		for _, line := range strings.Split(core.AgyHookSnippet(bin, st.ExistingCommand), "\n") {
+			fmt.Fprintln(a.stdout, "   "+a.p.cyan(line))
+		}
+		return fmt.Errorf("Antigravity CLI already has a custom statusLine command (%s) — left untouched; forward stdin to both `aiu hook agy` and your renderer", st.ExistingCommand)
+	}
+	verb := "enabled"
+	if st.AlreadyConfigured {
+		verb = "already enabled"
+	}
+	fmt.Fprintf(a.stdout, "%s %s %s statusLine hook in %s\n", a.p.green("✔"), verb, a.p.tag(core.Antigravity), a.p.dim(st.SettingsPath))
+	fmt.Fprintln(a.stdout, a.p.dim("   command: "+st.Command+" (stack_with_default: true)"))
+	fmt.Fprintln(a.stdout, a.p.dim("   no credentials stored — usage appears automatically the next time `agy` runs"))
+	return nil
+}
+
+func (a *app) hook(context.Context) error {
+	target := a.opts.provider
+	if target == "" && len(a.opts.args) > 0 {
+		if p, ok := core.ParseProvider(strings.ToLower(a.opts.args[0])); ok {
+			target = p
+		}
+	}
+	if target != core.Antigravity {
+		return errors.New("usage: aiu hook agy [--label NAME]  (reads Antigravity CLI statusLine JSON from stdin)")
+	}
+	data, err := io.ReadAll(io.LimitReader(a.stdin, 1<<20))
+	if err != nil {
+		return err
+	}
+	_, err = a.cfg.IngestAgyStatusLine(data, a.opts.label)
+	return err
 }
 
 func (a *app) login(ctx context.Context) error {
@@ -424,8 +537,10 @@ func (a *app) list(ctx context.Context) error {
 		return err
 	}
 	lw := 8
+	tw := 9
 	for _, r := range records {
 		lw = max(lw, core.DisplayWidth(r.Label))
+		tw = max(tw, core.DisplayWidth(r.Provider.Glyph()+" "+r.Provider.Name()))
 	}
 	now := time.Now()
 	for _, r := range records {
@@ -434,7 +549,14 @@ func (a *app) list(ctx context.Context) error {
 			active = a.p.green(" active")
 		}
 		var state string
-		if r.Missing {
+		if r.Provider.IsPassive() {
+			parts := []string{"passive", "read-only"}
+			if t := core.TierLabel(r); t != "" {
+				parts = append(parts, t)
+			}
+			parts = append(parts, "via agy statusLine")
+			state = a.p.dim(strings.Join(parts, " · "))
+		} else if r.Missing {
 			state = a.p.red("token missing")
 		} else {
 			parts := []string{"refreshable"}
@@ -460,7 +582,7 @@ func (a *app) list(ctx context.Context) error {
 			}
 			state = a.p.dim(strings.Join(parts, " · "))
 		}
-		fmt.Fprintf(a.stdout, "%s %s %s %s%s\n", padVisible(a.p.tag(r.Provider), 9), a.p.bold(padVisible(r.Label, lw)), padVisible(r.Email, 28), state, active)
+		fmt.Fprintf(a.stdout, "%s %s %s %s%s\n", padVisible(a.p.tag(r.Provider), tw), a.p.bold(padVisible(r.Label, lw)), padVisible(r.Email, 28), state, active)
 	}
 	return nil
 }
@@ -506,7 +628,7 @@ func (a *app) sync(ctx context.Context) error {
 		}
 		return false
 	}
-	if a.opts.provider != core.Codex {
+	if a.opts.provider == "" || a.opts.provider == core.Claude {
 		live, m, synced := a.cfg.SyncClaude(ctx, records, true)
 		switch {
 		case live == nil:
@@ -519,7 +641,7 @@ func (a *app) sync(ctx context.Context) error {
 			fmt.Fprintf(a.stdout, "%s %s is signed in to Claude Code but not tracked — run `aiu add`\n", a.p.yellow("!"), m.Email)
 		}
 	}
-	if a.opts.provider != core.Claude {
+	if a.opts.provider == "" || a.opts.provider == core.Codex {
 		live, m, synced := a.cfg.SyncCodex(records, true)
 		switch {
 		case live == nil:
@@ -532,6 +654,20 @@ func (a *app) sync(ctx context.Context) error {
 			fmt.Fprintf(a.stdout, "%s %s is signed in to Codex but not tracked — run `aiu add --codex`\n", a.p.yellow("!"), m.Email)
 		}
 	}
+	if a.opts.provider == core.Antigravity || (a.opts.provider == "" && (a.cfg.AgyHookConfigured().Configured || a.cfg.AgyActiveEmail() != "")) {
+		st := a.cfg.AgyHookConfigured()
+		email := a.cfg.AgyActiveEmail()
+		switch {
+		case email != "" && st.Configured:
+			fmt.Fprintf(a.stdout, "%s %s %s is tracked via agy statusLine\n", a.p.green("✔"), a.p.tag(core.Antigravity), email)
+		case st.Configured:
+			fmt.Fprintf(a.stdout, "%s %s statusLine hook is enabled; waiting for next `agy` session\n", a.p.green("✔"), a.p.tag(core.Antigravity))
+		case email != "":
+			fmt.Fprintf(a.stdout, "%s %s last saw %s (statusLine hook not detected in %s)\n", a.p.yellow("!"), a.p.tag(core.Antigravity), email, st.SettingsPath)
+		default:
+			fmt.Fprintln(a.stdout, a.p.dim("Antigravity CLI statusLine hook not configured — run `aiu add --agy`"))
+		}
+	}
 	return nil
 }
 
@@ -540,18 +676,33 @@ func (a *app) whoami(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	tw := 9
 	for _, pr := range core.Providers {
 		if a.opts.provider != "" && pr != a.opts.provider {
 			continue
 		}
-		prefix := padVisible(a.p.tag(pr), 9) + " "
+		tw = max(tw, core.DisplayWidth(pr.Glyph()+" "+pr.Name()))
+	}
+	for _, pr := range core.Providers {
+		if a.opts.provider != "" && pr != a.opts.provider {
+			continue
+		}
+		prefix := padVisible(a.p.tag(pr), tw) + " "
 		switch m := live[pr]; {
 		case m == nil:
-			fmt.Fprintln(a.stdout, prefix+a.p.dim("not signed in to "+pr.Client()))
+			if pr == core.Antigravity {
+				fmt.Fprintln(a.stdout, prefix+a.p.dim("no agy statusLine reading yet"))
+			} else {
+				fmt.Fprintln(a.stdout, prefix+a.p.dim("not signed in to "+pr.Client()))
+			}
 		case m.Email == "":
 			fmt.Fprintln(a.stdout, prefix+a.p.dim("unknown (token expired and no cached email)"))
 		case m.Verified:
-			fmt.Fprintln(a.stdout, prefix+m.Email)
+			if pr == core.Antigravity {
+				fmt.Fprintln(a.stdout, prefix+m.Email+" "+a.p.dim("(via agy statusLine)"))
+			} else {
+				fmt.Fprintln(a.stdout, prefix+m.Email)
+			}
 		default:
 			fmt.Fprintln(a.stdout, prefix+m.Email+" "+a.p.dim("(unverified — from .claude.json)"))
 		}
@@ -629,7 +780,7 @@ func (a *app) menuBar(context.Context) error {
 
 func (a *app) help() {
 	b := a.p.bold
-	fmt.Fprintf(a.stdout, `%s — rate limits and reset times across several Claude and ChatGPT (Codex) accounts
+	fmt.Fprintf(a.stdout, `%s — rate limits and reset times across Claude, ChatGPT (Codex), and Antigravity (agy) accounts
 
 %s
   aiu [status] [--json] [--sort 5h|7d] [--no-sync]    all tracked accounts (default)
@@ -649,7 +800,7 @@ func (a *app) help() {
   Every command takes --codex (or --provider codex) to act on Codex instead:
   aiu add --codex                                     track the account Codex is signed in as
   aiu login --codex [--label NAME]                    sign in to another ChatGPT account
-  aiu switch codex:NAME                               a claude:/codex: prefix also disambiguates names
+  aiu switch codex:NAME                               a claude:/codex:/agy: prefix also disambiguates names
   aiu resets codex:NAME [--json]                      view banked reset balance and expiration details
   aiu reset codex:NAME --yes [--credit-id ID]         use one banked reset (moves the weekly reset date)
   aiu auto-reset codex:NAME --enabled true|false [--threshold N]
@@ -658,8 +809,14 @@ func (a *app) help() {
   Reset checks run during desktop, watch, or status polling. --request-id UUID retries the same reset.
 
 %s
+  Antigravity is tracked passively via agy's official statusLine hook (no OAuth tokens stored or switched):
+  aiu add --agy                                       enable the statusLine hook in ~/.gemini/antigravity-cli/settings.json
+  aiu hook agy                                        statusLine stdin collector (invoked automatically by agy)
+  aiu --agy | aiu remove agy:NAME                     filter or remove a tracked Antigravity account
+
+%s
   index    %s
   tokens   %s
-  env      AIU_STORE=file  AIU_CONFIG_DIR  CLAUDE_CONFIG_DIR  CODEX_HOME  NO_COLOR
-`, b("aiu"), b("usage"), core.MinFetchSpacing.Minutes(), b("codex"), b("storage"), a.cfg.IndexPath(), a.cfg.StorageDescription())
+  env      AIU_STORE=file  AIU_CONFIG_DIR  CLAUDE_CONFIG_DIR  CODEX_HOME  AIU_AGY_SETTINGS  NO_COLOR
+`, b("aiu"), b("usage"), core.MinFetchSpacing.Minutes(), b("codex"), b("antigravity"), b("storage"), a.cfg.IndexPath(), a.cfg.StorageDescription())
 }

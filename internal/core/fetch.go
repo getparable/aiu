@@ -533,6 +533,16 @@ func (c *Config) Collect(ctx context.Context, opts CollectOptions) (*Snapshot, e
 	if inView[Codex] {
 		liveCodex, snap.Live[Codex], records = c.SyncCodex(records, !opts.NoSync)
 	}
+	if inView[Antigravity] {
+		if email := c.AgyActiveEmail(); email != "" {
+			snap.Live[Antigravity] = LiveMatch{Email: email, Verified: true}
+		}
+	}
+
+	var cachedUsage cache
+	if inView[Antigravity] {
+		cachedUsage = c.readCache()
+	}
 
 	// The live docs are shared by every goroutine that may hand a refresh back.
 	var mu sync.Mutex
@@ -544,6 +554,21 @@ func (c *Config) Collect(ctx context.Context, opts CollectOptions) (*Snapshot, e
 			defer wg.Done()
 			res := &Result{Record: r, Active: snap.Live[r.Provider].Is(r)}
 			results[i] = res
+			if r.Provider.IsPassive() {
+				e := cachedUsage[r.StoreKey()]
+				if e == nil || len(e.Usage) == 0 {
+					res.Stale = "waiting for first reading from agy statusLine"
+					return
+				}
+				res.Usage, res.FetchedAt = e.Usage, e.FetchedAt
+				now := c.now()
+				if agyHasRolledOver(e.Usage, now) {
+					res.Stale = "window reset since last agy reading — open agy to refresh"
+				} else if e.FetchedAt > 0 && now.Sub(msToTime(e.FetchedAt)) > agyStaleAfter {
+					res.Stale = "last seen " + FormatRelative(now.Sub(msToTime(e.FetchedAt))) + " ago — updates while agy runs"
+				}
+				return
+			}
 			if r.Missing {
 				res.Err, res.NeedsLogin = "token not found in store — sign in again for this account", true
 				if r.Provider == Codex {
