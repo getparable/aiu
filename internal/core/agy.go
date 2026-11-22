@@ -280,11 +280,16 @@ func AgyHookCommand(aiuBin string) string {
 	return shellQuoteCommand(bin) + " " + agyHookSubcmd
 }
 
-// AgyHookSnippet returns the shell snippet to add inside an existing custom
-// Antigravity statusLine script without replacing it.
-func AgyHookSnippet(aiuBin string) string {
+// AgyHookSnippet returns a shell snippet that captures stdin once and forwards it
+// to both `aiu hook agy` and an existing custom statusLine renderer so stdin is
+// never consumed before the user's script reads it.
+func AgyHookSnippet(aiuBin, existingCmd string) string {
 	cmd := AgyHookCommand(aiuBin)
-	return "input=$(cat)\nprintf '%s' \"$input\" | " + cmd + " >/dev/null 2>&1 || true"
+	renderer := strings.TrimSpace(existingCmd)
+	if renderer == "" {
+		renderer = "<your-statusline-command>"
+	}
+	return "input=$(cat)\nprintf '%s' \"$input\" | " + cmd + " >/dev/null 2>&1 || true\nprintf '%s' \"$input\" | " + renderer
 }
 
 func shellQuoteCommand(s string) string {

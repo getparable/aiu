@@ -415,11 +415,11 @@ func (a *app) addAgy() error {
 	if st.CustomExisting {
 		fmt.Fprintf(a.stdout, "%s %s already has a custom statusLine command (%s) — left untouched\n",
 			a.p.yellow("!"), st.SettingsPath, st.ExistingCommand)
-		fmt.Fprintln(a.stdout, a.p.dim("   add these two lines to your statusLine script to feed Antigravity usage into aiu:"))
-		for _, line := range strings.Split(core.AgyHookSnippet(bin), "\n") {
+		fmt.Fprintln(a.stdout, a.p.dim("   to keep your renderer and feed Antigravity usage into aiu, wrap both with:"))
+		for _, line := range strings.Split(core.AgyHookSnippet(bin, st.ExistingCommand), "\n") {
 			fmt.Fprintln(a.stdout, "   "+a.p.cyan(line))
 		}
-		return fmt.Errorf("Antigravity CLI already has a custom statusLine command (%s) — left untouched; pipe stdin into `aiu hook agy` from your script", st.ExistingCommand)
+		return fmt.Errorf("Antigravity CLI already has a custom statusLine command (%s) — left untouched; forward stdin to both `aiu hook agy` and your renderer", st.ExistingCommand)
 	}
 	verb := "enabled"
 	if st.AlreadyConfigured {
