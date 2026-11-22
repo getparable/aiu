@@ -115,14 +115,15 @@ func TestAgyCLIHookAndStatus(t *testing.T) {
 func TestResolveAiuHookBinaryPrefersUpgradeStablePath(t *testing.T) {
 	cellarExe := "/opt/homebrew/Cellar/aiu/0.4.0/AIU.app/Contents/MacOS/aiu"
 	got := resolveAiuHookBinaryFrom("/Users/dev", cellarExe, func(p string) bool {
-		return p == "/opt/homebrew/bin/aiu"
+		return filepath.ToSlash(p) == "/opt/homebrew/bin/aiu"
 	})
-	if got != "/opt/homebrew/bin/aiu" {
+	if filepath.ToSlash(got) != "/opt/homebrew/bin/aiu" {
 		t.Fatalf("resolveAiuHookBinaryFrom(Cellar) = %q, want /opt/homebrew/bin/aiu", got)
 	}
 
 	gotLocal := resolveAiuHookBinaryFrom("/Users/dev", cellarExe, func(p string) bool {
-		return p == "/Users/dev/.local/bin/aiu" || p == "/opt/homebrew/bin/aiu"
+		s := filepath.ToSlash(p)
+		return s == "/Users/dev/.local/bin/aiu" || s == "/opt/homebrew/bin/aiu"
 	})
 	if gotLocal != "~/.local/bin/aiu" {
 		t.Fatalf("resolveAiuHookBinaryFrom(.local/bin) = %q, want ~/.local/bin/aiu", gotLocal)
