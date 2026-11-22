@@ -97,18 +97,35 @@ func (c *Config) persistAccountFor(ctx context.Context, working *Record, label, 
 	if err := c.tokenSet(key, &rec); err != nil {
 		return nil, err
 	}
-	if existing != nil {
-		existing.Label, existing.Org, existing.OrgName = label, org, firstNonEmpty(orgName, existing.OrgName)
-	} else {
-		idx.Accounts = append(idx.Accounts, &IndexEntry{
-			Email: email, Label: label, Org: org, OrgName: orgName,
-			Provider: working.Provider, AddedAt: time.Now().UTC().Format(time.RFC3339),
-		})
-	}
-	if err := c.saveIndex(idx); err != nil {
+	isNew := existing == nil
+	if err := withFileLock(c.indexLockFile(), func() error {
+		latest, err := c.LoadIndex()
+		if err != nil {
+			return err
+		}
+		var cur *IndexEntry
+		for _, e := range latest.Accounts {
+			if e.Email == email && e.Provider == working.Provider && e.Org == org {
+				cur = e
+			}
+		}
+		if target != nil && cur == nil {
+			return errors.New("the account was removed while signing in; add it again to track it")
+		}
+		isNew = cur == nil
+		if cur != nil {
+			cur.Label, cur.Org, cur.OrgName = label, org, firstNonEmpty(orgName, cur.OrgName)
+		} else {
+			latest.Accounts = append(latest.Accounts, &IndexEntry{
+				Email: email, Label: label, Org: org, OrgName: orgName,
+				Provider: working.Provider, AddedAt: time.Now().UTC().Format(time.RFC3339),
+			})
+		}
+		return c.saveIndex(latest)
+	}); err != nil {
 		return nil, err
 	}
-	return &SavedAccount{Record: &rec, IsNew: existing == nil}, nil
+	return &SavedAccount{Record: &rec, IsNew: isNew}, nil
 }
 
 // CaptureClaudeCode adds the account Claude Code is signed in as, sharing its token
@@ -332,7 +349,7 @@ func (c *Config) FindAccount(target string, provider Provider) (*Index, *IndexEn
 
 // RemoveAccount forgets an account: its tokens, its index entry and its cached usage.
 func (c *Config) RemoveAccount(target string, provider Provider) (*IndexEntry, error) {
-	idx, e, err := c.FindAccount(target, provider)
+	_, e, err := c.FindAccount(target, provider)
 	if err != nil {
 		return nil, err
 	}
@@ -356,17 +373,24 @@ func (c *Config) RemoveAccount(target string, provider Provider) (*IndexEntry, e
 			return nil, err
 		}
 	}
-	kept := idx.Accounts[:0]
-	for _, a := range idx.Accounts {
-		if a != e {
+	if err := withFileLock(c.indexLockFile(), func() error {
+		latest, err := c.LoadIndex()
+		if err != nil {
+			return err
+		}
+		kept := latest.Accounts[:0]
+		for _, a := range latest.Accounts {
+			if a.Provider == e.Provider && a.Email == e.Email && a.Org == e.Org {
+				continue
+			}
 			kept = append(kept, a)
 		}
-	}
-	idx.Accounts = kept
-	if e.Provider == Antigravity {
-		addIgnoredAgy(idx, e.Email)
-	}
-	if err := c.saveIndex(idx); err != nil {
+		latest.Accounts = kept
+		if e.Provider == Antigravity {
+			addIgnoredAgy(latest, e.Email)
+		}
+		return c.saveIndex(latest)
+	}); err != nil {
 		return nil, err
 	}
 	c.cacheDelete(storeKey(e.Provider, e.Email, e.Org))
