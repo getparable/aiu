@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -91,4 +92,43 @@ func TestAgyCLIHookAndStatus(t *testing.T) {
 	if !strings.Contains(stdout.String(), `"ok":true`) {
 		t.Fatalf("expected ok result from frontend add, got: %s", stdout.String())
 	}
+
+	// 5. Custom statusLine conflict returns an error so Mac app surfaces the conflict.
+	customCfg := &core.Config{
+		Dir:             filepath.Join(dir, "aiu-custom"),
+		AgySettingsFile: filepath.Join(dir, "custom-settings.json"),
+		Now:             func() time.Time { return now },
+		Warn:            func(string) {},
+		Info:            func(string) {},
+	}
+	if err := writeTestFile(customCfg.AgySettingsFile, `{"statusLine":{"type":"command","command":"~/my-statusline.sh"}}`); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	opts, _ = parse([]string{"add", "--agy"})
+	a = &app{cfg: customCfg, opts: opts, stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}
+	if err := a.add(context.Background()); err == nil || !strings.Contains(err.Error(), "custom statusLine") {
+		t.Fatalf("expected custom statusLine conflict error, got %v", err)
+	}
+}
+
+func TestResolveAiuHookBinaryPrefersUpgradeStablePath(t *testing.T) {
+	cellarExe := "/opt/homebrew/Cellar/aiu/0.4.0/AIU.app/Contents/MacOS/aiu"
+	got := resolveAiuHookBinaryFrom("/Users/dev", cellarExe, func(p string) bool {
+		return p == "/opt/homebrew/bin/aiu"
+	})
+	if got != "/opt/homebrew/bin/aiu" {
+		t.Fatalf("resolveAiuHookBinaryFrom(Cellar) = %q, want /opt/homebrew/bin/aiu", got)
+	}
+
+	gotLocal := resolveAiuHookBinaryFrom("/Users/dev", cellarExe, func(p string) bool {
+		return p == "/Users/dev/.local/bin/aiu" || p == "/opt/homebrew/bin/aiu"
+	})
+	if gotLocal != "~/.local/bin/aiu" {
+		t.Fatalf("resolveAiuHookBinaryFrom(.local/bin) = %q, want ~/.local/bin/aiu", gotLocal)
+	}
+}
+
+func writeTestFile(path, content string) error {
+	return os.WriteFile(path, []byte(content), 0o600)
 }

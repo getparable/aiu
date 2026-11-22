@@ -332,13 +332,57 @@ func resolveAiuHookBinary() string {
 	if env := strings.TrimSpace(os.Getenv("AIU_HOOK_BIN")); env != "" {
 		return env
 	}
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		shortcut := filepath.Join(home, ".local", "bin", "aiu")
-		if st, err := os.Stat(shortcut); err == nil && !st.IsDir() {
+	home, _ := os.UserHomeDir()
+	exe, _ := os.Executable()
+	return resolveAiuHookBinaryFrom(home, exe, func(p string) bool {
+		st, err := os.Stat(p)
+		return err == nil && !st.IsDir()
+	})
+}
+
+// resolveAiuHookBinaryFrom selects an upgrade-stable path to `aiu` for external
+// CLI hooks, avoiding versioned Homebrew Cellar paths that break on upgrade.
+func resolveAiuHookBinaryFrom(home, exe string, exists func(string) bool) string {
+	if home != "" {
+		if exists(filepath.Join(home, ".local", "bin", "aiu")) {
 			return "~/.local/bin/aiu"
 		}
 	}
-	if exe, err := os.Executable(); err == nil && exe != "" {
+	// If running from a versioned Homebrew Cellar bundle (e.g.
+	// /opt/homebrew/Cellar/aiu/0.4.0/AIU.app/Contents/MacOS/aiu), prefer the
+	// stable Homebrew bin or opt symlink instead.
+	if exe != "" {
+		norm := filepath.ToSlash(exe)
+		if idx := strings.Index(norm, "/Cellar/aiu/"); idx > 0 {
+			prefix := norm[:idx]
+			for _, candidate := range []string{
+				filepath.FromSlash(prefix + "/bin/aiu"),
+				filepath.FromSlash(prefix + "/opt/aiu/AIU.app/Contents/MacOS/aiu"),
+			} {
+				if exists(candidate) {
+					return candidate
+				}
+			}
+		}
+	}
+	for _, candidate := range []string{
+		"/opt/homebrew/bin/aiu",
+		"/usr/local/bin/aiu",
+	} {
+		if exists(candidate) {
+			return candidate
+		}
+	}
+	if home != "" {
+		appBin := filepath.Join(home, "Applications", "AIU.app", "Contents", "MacOS", "aiu")
+		if exists(appBin) {
+			return "~/Applications/AIU.app/Contents/MacOS/aiu"
+		}
+	}
+	if exists("/Applications/AIU.app/Contents/MacOS/aiu") {
+		return "/Applications/AIU.app/Contents/MacOS/aiu"
+	}
+	if exe != "" {
 		return exe
 	}
 	return "aiu"
@@ -375,7 +419,7 @@ func (a *app) addAgy() error {
 		for _, line := range strings.Split(core.AgyHookSnippet(bin), "\n") {
 			fmt.Fprintln(a.stdout, "   "+a.p.cyan(line))
 		}
-		return nil
+		return fmt.Errorf("Antigravity CLI already has a custom statusLine command (%s) — left untouched; pipe stdin into `aiu hook agy` from your script", st.ExistingCommand)
 	}
 	verb := "enabled"
 	if st.AlreadyConfigured {

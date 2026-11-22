@@ -170,12 +170,26 @@ func TestAgyPassiveGuardsAndLookup(t *testing.T) {
 		t.Fatalf("unexpected disabled/reset_in_seconds window: %+v", ws)
 	}
 
-	// Removing cleans index, cache, and active marker.
+	// Removing cleans index, cache, and active marker, and prevents subsequent
+	// statusLine heartbeats from recreating the account until re-opted-in.
 	if _, err := c.RemoveAccount("agy:personal", ""); err != nil {
 		t.Fatalf("RemoveAccount failed: %v", err)
 	}
 	if got := c.AgyActiveEmail(); got != "" {
 		t.Fatalf("expected active email cleared after removal, got %q", got)
+	}
+	if saved, err := c.IngestAgyStatusLine([]byte(`{"email":"personal@gmail.com","plan_tier":"Pro","quota":{"gemini-5h":{"remaining_fraction":0.5}}}`), ""); err != nil || saved != nil {
+		t.Fatalf("expected removed account to stay ignored on heartbeat, got saved=%v err=%v", saved, err)
+	}
+	if idx, err := c.LoadIndex(); err != nil || len(idx.Accounts) != 0 {
+		t.Fatalf("expected removed account not to be recreated, got idx=%+v err=%v", idx, err)
+	}
+	// Running SetupAgyStatusLine (`aiu add --agy`) clears the ignore list so tracking resumes.
+	if _, err := c.SetupAgyStatusLine("~/.local/bin/aiu"); err != nil {
+		t.Fatalf("SetupAgyStatusLine re-opt-in failed: %v", err)
+	}
+	if saved, err := c.IngestAgyStatusLine([]byte(`{"email":"personal@gmail.com","plan_tier":"Pro","quota":{"gemini-5h":{"remaining_fraction":0.5}}}`), ""); err != nil || saved == nil || !saved.IsNew {
+		t.Fatalf("expected account to be tracked again after SetupAgyStatusLine, got saved=%+v err=%v", saved, err)
 	}
 }
 
@@ -234,5 +248,19 @@ func TestSetupAgyStatusLine(t *testing.T) {
 	after, _ := os.ReadFile(c.AgySettingsFile)
 	if string(after) != custom {
 		t.Fatalf("custom settings.json was modified:\n%s", string(after))
+	}
+
+	// Custom wrapper/pipeline that includes `aiu hook agy` must also be preserved.
+	wrapped := "{\n  \"statusLine\": {\n    \"type\": \"command\",\n    \"command\": \"tee >(aiu hook agy) | ~/.gemini/antigravity-cli/custom.sh\"\n  }\n}\n"
+	if err := os.WriteFile(c.AgySettingsFile, []byte(wrapped), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st4, err := c.SetupAgyStatusLine("~/.local/bin/aiu")
+	if err != nil || !st4.CustomExisting || st4.Configured {
+		t.Fatalf("expected wrapped command treated as CustomExisting, got %+v, %v", st4, err)
+	}
+	afterWrapped, _ := os.ReadFile(c.AgySettingsFile)
+	if string(afterWrapped) != wrapped {
+		t.Fatalf("wrapped custom statusLine was modified:\n%s", string(afterWrapped))
 	}
 }

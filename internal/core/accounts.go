@@ -363,6 +363,9 @@ func (c *Config) RemoveAccount(target string, provider Provider) (*IndexEntry, e
 		}
 	}
 	idx.Accounts = kept
+	if e.Provider == Antigravity {
+		addIgnoredAgy(idx, e.Email)
+	}
 	if err := c.saveIndex(idx); err != nil {
 		return nil, err
 	}

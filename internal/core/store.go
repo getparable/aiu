@@ -92,8 +92,9 @@ func (e *IndexEntry) Describe() string {
 
 // Index is the account list, in the order accounts were added.
 type Index struct {
-	Version  int           `json:"version"`
-	Accounts []*IndexEntry `json:"accounts"`
+	Version    int           `json:"version"`
+	Accounts   []*IndexEntry `json:"accounts"`
+	IgnoredAgy []string      `json:"ignoredAgy,omitempty"` // Antigravity emails explicitly removed by the user
 }
 
 // LoadIndex reads the account list; no file is an empty list.

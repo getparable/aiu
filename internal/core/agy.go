@@ -80,10 +80,14 @@ func (c *Config) IngestAgyStatusLine(data []byte, label string) (*SavedAccount, 
 	nowMs := nowTime.UnixMilli()
 
 	// Fast path: skip locking/rewriting accounts.json when the account is already
-	// indexed with the same plan tier and no explicit label change was requested.
-	saved, err := c.upsertPassiveAccount(Antigravity, email, label, planTier)
+	// indexed with the same plan tier and no explicit label change was requested,
+	// or when the user explicitly removed this email until they re-opt-in via `aiu add --agy`.
+	saved, ignored, err := c.upsertPassiveAccount(Antigravity, email, label, planTier)
 	if err != nil {
 		return nil, err
+	}
+	if ignored {
+		return nil, nil
 	}
 
 	key := storeKey(Antigravity, email, "")
@@ -134,9 +138,52 @@ func (c *Config) IngestAgyStatusLine(data []byte, label string) (*SavedAccount, 
 	return saved, nil
 }
 
-func (c *Config) upsertPassiveAccount(provider Provider, email, label, planTier string) (*SavedAccount, error) {
+func addIgnoredAgy(idx *Index, email string) {
+	norm := strings.ToLower(strings.TrimSpace(email))
+	if norm == "" {
+		return
+	}
+	for _, existing := range idx.IgnoredAgy {
+		if strings.ToLower(strings.TrimSpace(existing)) == norm {
+			return
+		}
+	}
+	idx.IgnoredAgy = append(idx.IgnoredAgy, norm)
+}
+
+func isIgnoredAgy(idx *Index, email string) bool {
+	norm := strings.ToLower(strings.TrimSpace(email))
+	if norm == "" {
+		return false
+	}
+	for _, existing := range idx.IgnoredAgy {
+		if strings.ToLower(strings.TrimSpace(existing)) == norm {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Config) clearIgnoredAgy() error {
+	return withFileLock(c.indexLockFile(), func() error {
+		idx, err := c.LoadIndex()
+		if err != nil {
+			return err
+		}
+		if len(idx.IgnoredAgy) == 0 {
+			return nil
+		}
+		idx.IgnoredAgy = nil
+		return c.saveIndex(idx)
+	})
+}
+
+func (c *Config) upsertPassiveAccount(provider Provider, email, label, planTier string) (*SavedAccount, bool, error) {
 	// Fast unlocked check to avoid rewriting accounts.json on every 300ms heartbeat.
 	if idx, err := c.LoadIndex(); err == nil {
+		if provider == Antigravity && label == "" && isIgnoredAgy(idx, email) {
+			return nil, true, nil
+		}
 		for _, e := range idx.Accounts {
 			if e.Provider == provider && e.Email == email && e.Org == "" {
 				if (label == "" || e.Label == label) && (planTier == "" || e.PlanType == planTier) {
@@ -149,7 +196,7 @@ func (c *Config) upsertPassiveAccount(provider Provider, email, label, planTier 
 							Source:   "statusline",
 						},
 						IsNew: false,
-					}, nil
+					}, false, nil
 				}
 				break
 			}
@@ -157,10 +204,15 @@ func (c *Config) upsertPassiveAccount(provider Provider, email, label, planTier 
 	}
 
 	var saved *SavedAccount
+	var ignored bool
 	err := withFileLock(c.indexLockFile(), func() error {
 		idx, err := c.LoadIndex()
 		if err != nil {
 			return err
+		}
+		if provider == Antigravity && label == "" && isIgnoredAgy(idx, email) {
+			ignored = true
+			return nil
 		}
 		var existing *IndexEntry
 		for _, e := range idx.Accounts {
@@ -207,7 +259,7 @@ func (c *Config) upsertPassiveAccount(provider Provider, email, label, planTier 
 		}
 		return nil
 	})
-	return saved, err
+	return saved, ignored, err
 }
 
 // AgyActiveEmail returns the email address most recently seen from Antigravity CLI's
@@ -259,8 +311,66 @@ func shellQuoteCommand(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// isAiuAgyHookCommand reports whether cmd is a standalone AIU Antigravity hook
+// invocation (e.g. `~/.local/bin/aiu hook agy`), rejecting shell pipelines,
+// chained commands, or custom wrapper scripts that merely call `aiu hook agy`.
 func isAiuAgyHookCommand(cmd string) bool {
-	return strings.Contains(cmd, agyHookSubcmd)
+	trimmed := strings.TrimSpace(cmd)
+	if trimmed == "" || strings.ContainsAny(trimmed, "|;&><$`\r\n()") {
+		return false
+	}
+	args, ok := splitSimpleCommand(trimmed)
+	if !ok || len(args) < 3 {
+		return false
+	}
+	base := strings.ToLower(filepath.Base(strings.ReplaceAll(args[0], `\`, "/")))
+	if base != "aiu" && base != "aiu.exe" {
+		return false
+	}
+	if args[1] != "hook" {
+		return false
+	}
+	rest := args[2:]
+	if len(rest) == 1 && (rest[0] == "agy" || rest[0] == "antigravity" || rest[0] == "--agy" || rest[0] == "--antigravity") {
+		return true
+	}
+	return false
+}
+
+func splitSimpleCommand(s string) ([]string, bool) {
+	var args []string
+	var cur strings.Builder
+	inArg := false
+	var quote rune
+	for _, r := range s {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			} else {
+				cur.WriteRune(r)
+			}
+		case r == '\'' || r == '"':
+			quote = r
+			inArg = true
+		case r == ' ' || r == '\t':
+			if inArg {
+				args = append(args, cur.String())
+				cur.Reset()
+				inArg = false
+			}
+		default:
+			cur.WriteRune(r)
+			inArg = true
+		}
+	}
+	if quote != 0 {
+		return nil, false
+	}
+	if inArg {
+		args = append(args, cur.String())
+	}
+	return args, true
 }
 
 // AgyHookConfigured inspects Antigravity CLI's settings.json without modifying it.
@@ -339,6 +449,10 @@ func (c *Config) SetupAgyStatusLine(aiuBin string) (*AgyHookStatus, error) {
 		}
 		stacked, _ := sl["stack_with_default"].(bool)
 		if existing == hookCmd && enabled && stacked {
+			// Re-running `aiu add --agy` explicitly opts back in for previously removed accounts.
+			if err := c.clearIgnoredAgy(); err != nil {
+				return nil, err
+			}
 			return &AgyHookStatus{
 				Configured:        true,
 				AlreadyConfigured: true,
@@ -367,6 +481,9 @@ func (c *Config) SetupAgyStatusLine(aiuBin string) (*AgyHookStatus, error) {
 		return nil, err
 	}
 	if err := writeAtomicFile(c.AgySettingsFile, append(out, '\n'), false, true); err != nil {
+		return nil, err
+	}
+	if err := c.clearIgnoredAgy(); err != nil {
 		return nil, err
 	}
 	return &AgyHookStatus{
